@@ -13,9 +13,12 @@ on:
         - '3h' 
         - '5h40m'
 
+permissions:
+  contents: write
+
 jobs:
   Premium-RDP-Setup:
-    runs-on: windows-latest
+    runs-on: windows-2019
     timeout-minutes: 340
     
     steps:
@@ -79,41 +82,47 @@ jobs:
           
           Write-Host "🎯 Cấu hình hoàn tất!" -ForegroundColor Green
 
+      # TẢI Ổ ĐĨA DỮ LIỆU
+      - name: 💾 TẢI Ổ ĐĨA DỮ LIỆU
+        run: |
+          Write-Host ""
+          Write-Host "🔄 ĐANG TẢI Ổ ĐĨA DỮ LIỆU (DATA DRIVE)..." -ForegroundColor Yellow
+          $dataDir = "C:\DataDrive"
+          $repoUrl = "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          
+          if (-not (Test-Path $dataDir)) {
+              New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+          }
+          Set-Location $dataDir
+          git init
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add origin $repoUrl
+          git fetch origin
+          
+          # Kiểm tra xem branch data-drive có tồn tại không
+          $branchExists = git ls-remote --heads origin data-drive
+          if ($branchExists) {
+              git checkout data-drive
+              Write-Host "✅ Đã tải dữ liệu cũ thành công vào C:\DataDrive!" -ForegroundColor Green
+          } else {
+              git checkout -b data-drive
+              Write-Host "✅ Đã tạo ổ đĩa dữ liệu mới tại C:\DataDrive!" -ForegroundColor Green
+          }
+
       # TẠO USER PREMIUM - (tối ưu mật khẩu)
       - name: 👤 TẠO TÀI KHOẢN PREMIUM
         run: |
           Write-Host ""
           Write-Host "👤 ĐANG TẠO TÀI KHOẢN PREMIUM" -ForegroundColor Yellow
           
-          # Hàm tạo password ngắn (8 ký tự) đảm bảo có ít nhất 1 chữ hoa, 1 chữ thường, 1 số
-          function New-PremiumPassword {
-              param()
-              $upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ'   # loại I,O để tránh nhầm
-              $lower = 'abcdefghijkmnpqrstuvwxyz'
-              $numbers = '23456789'               # loại 0,1 để tránh nhầm
-              $all = $upper + $lower + $numbers
-
-              # đảm bảo 1 chữ hoa, 1 chữ thường, 1 chữ số
-              $pw = ''
-              $pw += $upper[(Get-Random -Minimum 0 -Maximum $upper.Length)]
-              $pw += $lower[(Get-Random -Minimum 0 -Maximum $lower.Length)]
-              $pw += $numbers[(Get-Random -Minimum 0 -Maximum $numbers.Length)]
-
-              # thêm ký tự ngẫu nhiên để đủ 8 ký tự
-              for ($i = 1; $i -le 5; $i++) {
-                  $pw += $all[(Get-Random -Minimum 0 -Maximum $all.Length)]
-              }
-
-              # trộn ngẫu nhiên vị trí các ký tự rồi trả về
-              return -join ($pw.ToCharArray() | Sort-Object { Get-Random })
-          }
-
-          # Nếu người dùng đặt mật khẩu tùy chỉnh (ví dụ bằng secret) thì ưu tiên dùng
+          # Sử dụng mật khẩu cố định thay vì random
           if ($env:CUSTOM_RDP_PASS) {
               $matKhau = $env:CUSTOM_RDP_PASS
               Write-Host "│ ℹ️  Dùng mật khẩu tùy chỉnh từ env" -ForegroundColor Blue
           } else {
-              $matKhau = New-PremiumPassword
+              $matKhau = "2008"
+              Write-Host "│ ℹ️  Dùng mật khẩu mặc định (2008)" -ForegroundColor Blue
           }
 
           $securePass = ConvertTo-SecureString $matKhau -AsPlainText -Force
@@ -379,6 +388,22 @@ jobs:
       - name: 🧹 DỌN DẸP HỆ THỐNG
         if: always()
         run: |
+          Write-Host ""
+          Write-Host "💾 ĐANG LƯU Ổ ĐĨA DỮ LIỆU..." -ForegroundColor Yellow
+          $dataDir = "C:\DataDrive"
+          if (Test-Path $dataDir) {
+              Set-Location $dataDir
+              git add .
+              $status = git status --porcelain
+              if ($status) {
+                  git commit -m "Auto-save data from RDP session $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+                  git push origin data-drive
+                  Write-Host "✅ Đã lưu dữ liệu lên GitHub thành công!" -ForegroundColor Green
+              } else {
+                  Write-Host "ℹ️ Không có thay đổi nào để lưu." -ForegroundColor Blue
+              }
+          }
+
           Write-Host ""
           Write-Host "🧹 ĐANG DỌN DẸP HỆ THỐNG..." -ForegroundColor Yellow
           
