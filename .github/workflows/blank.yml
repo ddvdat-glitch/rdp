@@ -121,8 +121,8 @@ jobs:
               $matKhau = $env:CUSTOM_RDP_PASS
               Write-Host "│ ℹ️  Dùng mật khẩu tùy chỉnh từ env" -ForegroundColor Blue
           } else {
-              $matKhau = "2008"
-              Write-Host "│ ℹ️  Dùng mật khẩu mặc định (2008)" -ForegroundColor Blue
+              $matKhau = "Dat7122008"
+              Write-Host "│ ℹ️  Dùng mật khẩu mặc định (Dat7122008)" -ForegroundColor Blue
           }
 
           $securePass = ConvertTo-SecureString $matKhau -AsPlainText -Force
