@@ -73,42 +73,24 @@ jobs:
       - name: ▶️ npm start & duy trì
         env:
           PORT: ${{ github.event.inputs.port }}
-          APP_PORT: ${{ github.event.inputs.port }}
         run: |
           switch ("${{ github.event.inputs.duration }}") {
               "1h"    { $totalMinutes = 60 }
               "3h"    { $totalMinutes = 180 }
               "5h40m" { $totalMinutes = 335 }   # chừa vài phút cho dọn dẹp
-              default { $totalMinutes = 60 }
           }
-
           $endTime = (Get-Date).AddMinutes($totalMinutes)
+
           $appDir = Join-Path $PWD "app"
-
-          function Get-Timestamp {
-              return (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-          }
-
           function Start-App {
-              Write-Host "[$(Get-Timestamp)] 🚀 Đang khởi động npm start..." -ForegroundColor Cyan
-
-              # Xóa log cũ
-              Remove-Item "$env:TEMP\app.out.log" -Force -ErrorAction SilentlyContinue
-              Remove-Item "$env:TEMP\app.err.log" -Force -ErrorAction SilentlyContinue
-
-              $p = Start-Process `
-                  -FilePath "npm.cmd" `
-                  -ArgumentList "start" `
+              Start-Process -FilePath "npm.cmd" -ArgumentList "start" `
                   -WorkingDirectory $appDir `
                   -RedirectStandardOutput "$env:TEMP\app.out.log" `
-                  -RedirectStandardError "$env:TEMP\app.err.log" `
+                  -RedirectStandardError  "$env:TEMP\app.err.log" `
                   -PassThru
-
-              return $p
           }
 
           $proc = Start-App
-
           Start-Sleep -Seconds 8
 
           Write-Host ""
@@ -118,70 +100,27 @@ jobs:
           Write-Host "│ ⏰ Kết thúc: $($endTime.ToString('HH:mm:ss'))" -ForegroundColor White
           Write-Host "└────────────────────────────────────────┘" -ForegroundColor Cyan
 
-          # Kiểm tra ngay sau 8 giây
-          if ($proc.HasExited) {
-              Write-Host ""
-              Write-Host "[$(Get-Timestamp)] ❌ npm start ĐÃ CHẾT NGAY KHI KHỞI ĐỘNG!" -ForegroundColor Red
-              Write-Host "[$(Get-Timestamp)] ExitCode: $($proc.ExitCode)" -ForegroundColor Red
-
-              Write-Host ""
-              Write-Host "===== CHI TIẾT STDOUT (Lỗi Khởi Động) =====" -ForegroundColor Yellow
-              Get-Content "$env:TEMP\app.out.log" -Tail 150 -ErrorAction SilentlyContinue
-
-              Write-Host ""
-              Write-Host "===== CHI TIẾT STDERR (Lỗi Khởi Động) =====" -ForegroundColor Red
-              Get-Content "$env:TEMP\app.err.log" -Tail 150 -ErrorAction SilentlyContinue
-
-              exit 1
-          }
-
           $lastLog = Get-Date
-
           while ((Get-Date) -lt $endTime) {
               # Tự khởi động lại nếu app chết
               if ($proc.HasExited) {
-                  Write-Host ""
-                  Write-Host "[$(Get-Timestamp)] ⚠️ Ứng dụng đột ngột dừng! ExitCode: $($proc.ExitCode)" -ForegroundColor Yellow
-
-                  Write-Host "===== CHI TIẾT STDOUT (Sự Cố) =====" -ForegroundColor Yellow
-                  Get-Content "$env:TEMP\app.out.log" -Tail 100 -ErrorAction SilentlyContinue
-
-                  Write-Host "===== CHI TIẾT STDERR (Sự Cố) =====" -ForegroundColor Red
-                  Get-Content "$env:TEMP\app.err.log" -Tail 100 -ErrorAction SilentlyContinue
-
-                  Write-Host "[$(Get-Timestamp)] 🔄 Đang thử khởi động lại ứng dụng..." -ForegroundColor Cyan
-
+                  Write-Host "[$(Get-Date -Format HH:mm:ss)] ⚠️ App dừng, khởi động lại..." -ForegroundColor Yellow
                   $proc = Start-App
-                  Start-Sleep -Seconds 5
               }
 
               # In log app mỗi 60 giây
               if (((Get-Date) - $lastLog).TotalSeconds -ge 60) {
-                  Write-Host ""
-                  Write-Host "[$(Get-Timestamp)] ----- LOG GẦN NHẤT -----" -ForegroundColor DarkGray
-
-                  $stdoutLines = Get-Content "$env:TEMP\app.out.log" -Tail 30 -ErrorAction SilentlyContinue
-                  if ($stdoutLines) {
-                      Write-Host "[STDOUT]" -ForegroundColor Gray
-                      $stdoutLines | ForEach-Object { Write-Host "  $_" -ForegroundColor White }
-                  }
-
-                  $stderrLines = Get-Content "$env:TEMP\app.err.log" -Tail 30 -ErrorAction SilentlyContinue
-                  if ($stderrLines) {
-                      Write-Host "[STDERR]" -ForegroundColor Red
-                      $stderrLines | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
-                  }
-
+                  Write-Host "----- log gần nhất -----" -ForegroundColor DarkGray
+                  Get-Content "$env:TEMP\app.out.log" -Tail 10 -ErrorAction SilentlyContinue
+                  Get-Content "$env:TEMP\app.err.log" -Tail 5  -ErrorAction SilentlyContinue
                   $left = [math]::Floor(($endTime - (Get-Date)).TotalMinutes)
-                  Write-Host "[$(Get-Timestamp)] ⏳ Trạng thái: Đang hoạt động | Thời gian còn lại: khoảng $left phút" -ForegroundColor Blue
-
+                  Write-Host "⏳ Còn khoảng $left phút" -ForegroundColor Blue
                   $lastLog = Get-Date
               }
-
               Start-Sleep -Seconds 10
           }
 
-          Write-Host "[$(Get-Timestamp)] 🎯 HẾT THỜI GIAN - TỰ ĐỘNG DỪNG PHIÊN!" -ForegroundColor Red
+          Write-Host "🎯 HẾT THỜI GIAN - TỰ ĐỘNG DỪNG!" -ForegroundColor Red
 
       # 6. DỌN DẸP
       - name: 🧹 Dọn dẹp
