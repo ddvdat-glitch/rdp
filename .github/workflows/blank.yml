@@ -26,7 +26,7 @@ jobs:
     env:
       APP_PORT: ${{ github.event.inputs.port }}
       REPO_URL: https://github.com/ddvdat-glitch/botcuadat.git
-
+      DISCORD_TOKEN: MTU1NDEwOTM3NjI0NjMxNzExNw.GH_r-n.yp-PLBhmqPjAQifzYPL0o9Lg9kW5iHEJyq61K0
     steps:
       # 1. CÀI NODE
       - name: 🟢 Cài Node.js
@@ -42,12 +42,30 @@ jobs:
           npm install
           Write-Host "✅ npm install xong" -ForegroundColor Green
 
-      # 3. MỞ FIREWALL CHO CỔNG
+      # 3. ĐỔI .ENV.EXAMPLE THÀNH .ENV & THAY TOKEN
+      - name: ⚙️ Cấu hình .env từ .env.example
+        run: |
+          Set-Location app
+          if (Test-Path .env.example) {
+              Rename-Item .env.example .env -Force
+              (Get-Content .env) -replace 'BOT-token', $env:DISCORD_TOKEN | Set-Content .env
+          } else {
+              @"
+          # Token cố định của bot (Discord Developer Portal > Bot > Reset Token)
+          DISCORD_TOKEN=$env:DISCORD_TOKEN
+          # Mật khẩu vào trang web quản trị
+          ADMIN_PASSWORD=2008
+          PORT=$env:APP_PORT
+          "@ | Out-File -FilePath .env -Encoding utf8
+          }
+          Write-Host "✅ Đã đổi .env.example thành .env và thay token thành công" -ForegroundColor Green
+
+      # 4. MỞ FIREWALL CHO CỔNG
       - name: 🔓 Mở cổng firewall
         run: |
           netsh advfirewall firewall add rule name="BotApp-In" dir=in action=allow protocol=TCP localport=$env:APP_PORT profile=any
 
-      # 4. TAILSCALE
+      # 5. TAILSCALE
       - name: 🌐 Thiết lập Tailscale
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
@@ -69,7 +87,7 @@ jobs:
           "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
           Write-Host "✅ Tailscale IP: $ip" -ForegroundColor Green
 
-      # 5. CHẠY npm start + GIỮ PHIÊN
+      # 6. CHẠY npm start + GIỮ PHIÊN
       - name: ▶️ npm start & duy trì
         env:
           PORT: ${{ github.event.inputs.port }}
@@ -122,7 +140,7 @@ jobs:
 
           Write-Host "🎯 HẾT THỜI GIAN - TỰ ĐỘNG DỪNG!" -ForegroundColor Red
 
-      # 6. DỌN DẸP
+      # 7. DỌN DẸP
       - name: 🧹 Dọn dẹp
         if: always()
         run: |
