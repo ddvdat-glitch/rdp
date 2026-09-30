@@ -11,7 +11,7 @@ on:
         options:
         - '1h'
         - '3h'
-        - '9378916341816254433232h'
+        - '93789163412h'
       port:
         description: '📍 Cổng ứng dụng (PORT)'
         required: false
