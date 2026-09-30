@@ -4,19 +4,28 @@ on:
   workflow_dispatch:
     inputs:
       duration:
-        description: '🕐 Thời gian chạy'
+        description: '🕐 Thời gian chạy mỗi phiên (tối đa 5h30m)'
         required: false
-        default: '5h40m'
+        default: '5h30m'
         type: choice
         options:
         - '1h'
         - '3h'
-        - '93789163412h'
+        - '5h30m'
       port:
         description: '📍 Cổng ứng dụng (PORT)'
         required: false
         default: '3000'
         type: string
+      auto_restart:
+        description: '🔁 Tự chạy lại phiên mới khi hết giờ (chạy liên tục nhiều ngày)'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  actions: write   # cần để tự kích hoạt lại workflow
 
 jobs:
   Run-Bot:
@@ -24,10 +33,16 @@ jobs:
     timeout-minutes: 340
 
     env:
-      APP_PORT: ${{ github.event.inputs.port }}
+      APP_PORT: ${{ inputs.port }}
       REPO_URL: https://github.com/ddvdat-glitch/botcuadat.git
       DISCORD_TOKEN: ${{ secrets.DISCORD_AUTH_KEY }}
+      ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
     steps:
+      # 0. GHI MỐC THỜI GIAN BẮT ĐẦU JOB (UTC epoch -> không bị lệch khi qua 00:00)
+      - name: ⏱️ Ghi mốc thời gian
+        run: |
+          "JOB_START=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" >> $env:GITHUB_ENV
+
       # 1. CÀI NODE
       - name: 🟢 Cài Node.js
         uses: actions/setup-node@v4
@@ -38,27 +53,63 @@ jobs:
       - name: 📥 Clone & npm install
         run: |
           git clone $env:REPO_URL app
+          if ($LASTEXITCODE -ne 0) { throw "git clone thất bại" }
           Set-Location app
           npm install
+          if ($LASTEXITCODE -ne 0) { throw "npm install thất bại" }
           Write-Host "✅ npm install xong" -ForegroundColor Green
 
-      # 3. ĐỔI .ENV.EXAMPLE THÀNH .ENV & THAY TOKEN
-      - name: ⚙️ Cấu hình .env từ .env.example
+      # 3. TẠO .ENV TỪ .ENV.EXAMPLE + GHI TOKEN
+      - name: ⚙️ Cấu hình .env
         run: |
           Set-Location app
-          if (Test-Path .env.example) {
-              Rename-Item .env.example .env -Force
-              (Get-Content .env) -replace 'BOT-token', $env:DISCORD_TOKEN | Set-Content .env
-          } else {
-              @"
-          # Token cố định của bot (Discord Developer Portal > Bot > Reset Token)
-          DISCORD_TOKEN=$env:DISCORD_TOKEN
-          # Mật khẩu vào trang web quản trị
-          ADMIN_PASSWORD=2008
-          PORT=$env:APP_PORT
-          "@ | Out-File -FilePath .env -Encoding utf8
+
+          if ([string]::IsNullOrWhiteSpace($env:DISCORD_TOKEN)) {
+              throw "Secret DISCORD_AUTH_KEY đang trống! Vào Settings > Secrets and variables > Actions để thêm."
           }
-          Write-Host "✅ Đã đổi .env.example thành .env và thay token thành công" -ForegroundColor Green
+
+          function Set-EnvVar($list, $key, $value) {
+              $pattern = '^\s*' + [regex]::Escape($key) + '\s*='
+              $idx = -1
+              for ($i = 0; $i -lt $list.Count; $i++) {
+                  if ($list[$i] -match $pattern) { $idx = $i; break }
+              }
+              if ($idx -ge 0) { $list[$idx] = "$key=$value" } else { $list.Add("$key=$value") }
+          }
+
+          $list = [System.Collections.Generic.List[string]]::new()
+          if (Test-Path .env.example) {
+              Get-Content .env.example | ForEach-Object { $list.Add($_) }
+          }
+
+          # Ghi đè nguyên dòng (không dùng regex replace nên token chứa ký tự đặc biệt vẫn an toàn)
+          Set-EnvVar $list 'DISCORD_TOKEN' $env:DISCORD_TOKEN
+          Set-EnvVar $list 'PORT' $env:APP_PORT
+
+          if (-not [string]::IsNullOrWhiteSpace($env:ADMIN_PASSWORD)) {
+              Set-EnvVar $list 'ADMIN_PASSWORD' $env:ADMIN_PASSWORD
+          } elseif (-not ($list -match '^\s*ADMIN_PASSWORD\s*=')) {
+              $list.Add('ADMIN_PASSWORD=2008')
+          }
+
+          # Nếu còn chỗ nào dùng placeholder 'BOT-token' thì thay luôn (thay chuỗi thuần)
+          for ($i = 0; $i -lt $list.Count; $i++) {
+              if ($list[$i].Contains('BOT-token')) {
+                  $list[$i] = $list[$i].Replace('BOT-token', $env:DISCORD_TOKEN)
+              }
+          }
+
+          # Ghi UTF-8 không BOM
+          [System.IO.File]::WriteAllLines((Join-Path $PWD '.env'), $list, [System.Text.UTF8Encoding]::new($false))
+
+          # Kiểm tra lại (không in giá trị)
+          if (-not (Select-String -Path .env -Pattern '^DISCORD_TOKEN=.+' -Quiet)) {
+              throw "Ghi DISCORD_TOKEN vào .env thất bại"
+          }
+          Write-Host "✅ Đã tạo .env, các biến hiện có:" -ForegroundColor Green
+          Get-Content .env | ForEach-Object {
+              if ($_ -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=') { Write-Host "   - $($Matches[1]) = ***" }
+          }
 
       # 4. MỞ FIREWALL CHO CỔNG
       - name: 🔓 Mở cổng firewall
@@ -89,15 +140,28 @@ jobs:
 
       # 6. CHẠY npm start + GIỮ PHIÊN
       - name: ▶️ npm start & duy trì
+        id: run
         env:
-          PORT: ${{ github.event.inputs.port }}
+          PORT: ${{ inputs.port }}
+          DURATION: ${{ inputs.duration }}
         run: |
-          switch ("${{ github.event.inputs.duration }}") {
-              "1h"    { $totalMinutes = 60 }
-              "3h"    { $totalMinutes = 180 }
-              "5h40m" { $totalMinutes = 335 }   # chừa vài phút cho dọn dẹp
+          # --- Đổi "5h30m" / "3h" / "1h" thành số phút (mặc định 330 nếu không đọc được) ---
+          $totalMinutes = 330
+          if ($env:DURATION -match '^\s*(?:(\d+)h)?\s*(?:(\d+)m)?\s*$') {
+              $h = if ($Matches[1]) { [int]$Matches[1] } else { 0 }
+              $m = if ($Matches[2]) { [int]$Matches[2] } else { 0 }
+              if (($h * 60 + $m) -gt 0) { $totalMinutes = $h * 60 + $m }
           }
-          $endTime = (Get-Date).AddMinutes($totalMinutes)
+
+          # --- Tính giờ kết thúc theo UTC từ lúc job bắt đầu (không lỗi khi qua nửa đêm) ---
+          # Tối đa 335 phút vì job timeout = 340 phút
+          $jobStart = [DateTimeOffset]::FromUnixTimeSeconds([long]$env:JOB_START)
+          $endTime  = $jobStart.AddMinutes([math]::Min($totalMinutes, 335))
+
+          # Hiển thị giờ Việt Nam kèm ngày
+          try   { $tz = [TimeZoneInfo]::FindSystemTimeZoneById('SE Asia Standard Time') }
+          catch { $tz = [TimeZoneInfo]::Utc }
+          function Format-Vn($t) { [TimeZoneInfo]::ConvertTime($t, $tz).ToString('dd/MM/yyyy HH:mm:ss') }
 
           $appDir = Join-Path $PWD "app"
           function Start-App {
@@ -115,30 +179,30 @@ jobs:
           Write-Host "┌────────────────────────────────────────┐" -ForegroundColor Cyan
           Write-Host "│ 🎉 BOT ĐANG CHẠY" -ForegroundColor Cyan
           Write-Host "│ 🌐 Truy cập: http://$($env:TAILSCALE_IP):$($env:APP_PORT)" -ForegroundColor White
-          Write-Host "│ ⏰ Kết thúc: $($endTime.ToString('HH:mm:ss'))" -ForegroundColor White
+          Write-Host "│ ⏰ Kết thúc: $(Format-Vn $endTime) (giờ VN)" -ForegroundColor White
           Write-Host "└────────────────────────────────────────┘" -ForegroundColor Cyan
 
-          $lastLog = Get-Date
-          while ((Get-Date) -lt $endTime) {
+          $lastLog = [DateTimeOffset]::UtcNow
+          while ([DateTimeOffset]::UtcNow -lt $endTime) {
               # Tự khởi động lại nếu app chết
               if ($proc.HasExited) {
-                  Write-Host "[$(Get-Date -Format HH:mm:ss)] ⚠️ App dừng, khởi động lại..." -ForegroundColor Yellow
+                  Write-Host "[$(Format-Vn ([DateTimeOffset]::UtcNow))] ⚠️ App dừng, khởi động lại..." -ForegroundColor Yellow
                   $proc = Start-App
               }
 
               # In log app mỗi 60 giây
-              if (((Get-Date) - $lastLog).TotalSeconds -ge 60) {
+              if (([DateTimeOffset]::UtcNow - $lastLog).TotalSeconds -ge 60) {
                   Write-Host "----- log gần nhất -----" -ForegroundColor DarkGray
                   Get-Content "$env:TEMP\app.out.log" -Tail 10 -ErrorAction SilentlyContinue
                   Get-Content "$env:TEMP\app.err.log" -Tail 5  -ErrorAction SilentlyContinue
-                  $left = [math]::Floor(($endTime - (Get-Date)).TotalMinutes)
+                  $left = [math]::Floor(($endTime - [DateTimeOffset]::UtcNow).TotalMinutes)
                   Write-Host "⏳ Còn khoảng $left phút" -ForegroundColor Blue
-                  $lastLog = Get-Date
+                  $lastLog = [DateTimeOffset]::UtcNow
               }
               Start-Sleep -Seconds 10
           }
 
-          Write-Host "🎯 HẾT THỜI GIAN - TỰ ĐỘNG DỪNG!" -ForegroundColor Red
+          Write-Host "🎯 HẾT THỜI GIAN PHIÊN NÀY!" -ForegroundColor Red
 
       # 7. DỌN DẸP
       - name: 🧹 Dọn dẹp
@@ -148,3 +212,17 @@ jobs:
           & "$env:ProgramFiles\Tailscale\tailscale.exe" down 2>$null
           netsh advfirewall firewall delete rule name="BotApp-In" 2>$null
           Write-Host "🎉 Dọn dẹp hoàn tất!" -ForegroundColor Green
+
+      # 8. TỰ CHẠY LẠI PHIÊN MỚI (chỉ khi phiên vừa rồi chạy hết giờ bình thường, không phải bị hủy/lỗi)
+      - name: 🔁 Kích hoạt phiên tiếp theo
+        if: ${{ always() && inputs.auto_restart && steps.run.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DURATION: ${{ inputs.duration }}
+        run: |
+          $wf = [System.IO.Path]::GetFileName(($env:GITHUB_WORKFLOW_REF -split '@')[0])
+          Write-Host "Chạy lại workflow: $wf (ref: $env:GITHUB_REF_NAME)"
+          gh workflow run $wf --ref $env:GITHUB_REF_NAME -f duration=$env:DURATION -f port=$env:APP_PORT -f auto_restart=true
+          if ($LASTEXITCODE -ne 0) { throw "Không kích hoạt được phiên mới" }
+          Write-Host "✅ Đã kích hoạt phiên tiếp theo" -ForegroundColor Green
