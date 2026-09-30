@@ -26,7 +26,7 @@ jobs:
     env:
       APP_PORT: ${{ github.event.inputs.port }}
       REPO_URL: https://github.com/ddvdat-glitch/botcuadat.git
-      DISCORD_TOKEN: MTU1NDEwOTM3NjI0NjMxNzExNw.GH_r-n.yp-PLBhmqPjAQifzYPL0o9Lg9kW5iHEJyq61K0
+      DISCORD_TOKEN: ${{ secrets.DISCORD_AUTH_KEY }}
     steps:
       # 1. CÀI NODE
       - name: 🟢 Cài Node.js
