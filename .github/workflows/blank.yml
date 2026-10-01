@@ -46,6 +46,10 @@ jobs:
       DATA_FILE: data.json          # file dữ liệu của bot (nằm ở thư mục gốc của bot)
       DATA_BRANCH: bot-data         # nhánh dùng để lưu dữ liệu
       SAVE_EVERY_MINUTES: '5'       # lưu định kỳ mỗi X phút
+      OLLAMA_MODEL: qwen2.5:7b
+      OLLAMA_HOST: 127.0.0.1:11434
+      OLLAMA_MODELS: C:\ollama-models   # thư mục chứa model (để cache)
+      OLLAMA_KEEP_ALIVE: '-1'           # giữ model trong RAM, không tự gỡ
     steps:
       # 0. GHI MỐC THỜI GIAN BẮT ĐẦU JOB (UTC epoch -> không bị lệch khi qua 00:00)
       - name: ⏱️ Ghi mốc thời gian
@@ -190,6 +194,10 @@ jobs:
           Set-EnvVar $list 'DISCORD_TOKEN' $env:DISCORD_TOKEN
           Set-EnvVar $list 'PORT' $env:APP_PORT
 
+          # Cấu hình Ollama cho bot (tên biến cần khớp với code của bot, sửa nếu bot dùng tên khác)
+          Set-EnvVar $list 'OLLAMA_HOST' 'http://127.0.0.1:11434'
+          Set-EnvVar $list 'OLLAMA_MODEL' $env:OLLAMA_MODEL
+
           if (-not [string]::IsNullOrWhiteSpace($env:ADMIN_PASSWORD)) {
               Set-EnvVar $list 'ADMIN_PASSWORD' $env:ADMIN_PASSWORD
           } elseif (-not ($list -match '^\s*ADMIN_PASSWORD\s*=')) {
@@ -242,6 +250,58 @@ jobs:
           "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
           Write-Host "✅ Tailscale IP: $ip" -ForegroundColor Green
 
+      # 5b. CACHE MODEL OLLAMA (các phiên sau khỏi tải lại ~4.7GB)
+      - name: 📦 Cache model Ollama
+        uses: actions/cache@v4
+        with:
+          path: C:\ollama-models
+          key: ollama-models-qwen2.5-7b-v1
+
+      # 5c. CÀI OLLAMA
+      - name: 🦙 Cài Ollama
+        run: |
+          $zip = "$env:TEMP\ollama.zip"
+          Invoke-WebRequest -Uri "https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath "C:\ollama" -Force
+          "C:\ollama" >> $env:GITHUB_PATH
+          New-Item -ItemType Directory -Force -Path $env:OLLAMA_MODELS | Out-Null
+          & "C:\ollama\ollama.exe" --version
+          Write-Host "✅ Đã cài Ollama" -ForegroundColor Green
+
+      # 5d. BẬT OLLAMA + TẢI MODEL + NẠP SẴN VÀO RAM
+      - name: 🧠 Bật Ollama & tải qwen2.5:7b
+        run: |
+          Start-Process -FilePath "C:\ollama\ollama.exe" -ArgumentList "serve" `
+              -WindowStyle Hidden `
+              -RedirectStandardOutput "$env:TEMP\ollama.out.log" `
+              -RedirectStandardError  "$env:TEMP\ollama.err.log"
+
+          # Chờ server sẵn sàng (tối đa ~90 giây)
+          $ready = $false
+          for ($i = 0; $i -lt 30; $i++) {
+              try {
+                  Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/version" -TimeoutSec 3 | Out-Null
+                  $ready = $true; break
+              } catch { Start-Sleep -Seconds 3 }
+          }
+          if (-not $ready) {
+              Get-Content "$env:TEMP\ollama.err.log" -Tail 30 -ErrorAction SilentlyContinue
+              throw "Ollama server không khởi động được"
+          }
+          Write-Host "✅ Ollama server đã chạy" -ForegroundColor Green
+
+          # Tải model (nếu đã có trong cache thì xong ngay)
+          & "C:\ollama\ollama.exe" pull $env:OLLAMA_MODEL
+          if ($LASTEXITCODE -ne 0) { throw "Tải model $env:OLLAMA_MODEL thất bại" }
+
+          # Nạp model vào RAM sẵn để bot gọi lần đầu không bị chậm
+          $body = @{ model = $env:OLLAMA_MODEL; prompt = "hi"; stream = $false; keep_alive = -1 } | ConvertTo-Json
+          Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/generate" -Method Post `
+              -ContentType "application/json" -Body $body -TimeoutSec 600 | Out-Null
+
+          & "C:\ollama\ollama.exe" list
+          Write-Host "✅ Model $env:OLLAMA_MODEL đã sẵn sàng tại http://127.0.0.1:11434" -ForegroundColor Green
+
       # 6. CHẠY npm start + GIỮ PHIÊN + LƯU DỮ LIỆU ĐỊNH KỲ
       - name: ▶️ npm start & duy trì
         id: run
@@ -283,6 +343,7 @@ jobs:
           Write-Host "┌────────────────────────────────────────┐" -ForegroundColor Cyan
           Write-Host "│ 🎉 BOT ĐANG CHẠY" -ForegroundColor Cyan
           Write-Host "│ 🌐 Truy cập: http://$($env:TAILSCALE_IP):$($env:APP_PORT)" -ForegroundColor White
+          Write-Host "│ 🦙 Ollama: http://127.0.0.1:11434 ($($env:OLLAMA_MODEL))" -ForegroundColor White
           Write-Host "│ ⏰ Kết thúc: $(Format-Vn $endTime) (giờ VN)" -ForegroundColor White
           Write-Host "└────────────────────────────────────────┘" -ForegroundColor Cyan
 
@@ -294,6 +355,15 @@ jobs:
               if ($proc.HasExited) {
                   Write-Host "[$(Format-Vn ([DateTimeOffset]::UtcNow))] ⚠️ App dừng, khởi động lại..." -ForegroundColor Yellow
                   $proc = Start-App
+              }
+
+              # Tự khởi động lại Ollama nếu bị chết
+              if (-not (Get-Process "ollama" -ErrorAction SilentlyContinue)) {
+                  Write-Host "[$(Format-Vn ([DateTimeOffset]::UtcNow))] ⚠️ Ollama dừng, khởi động lại..." -ForegroundColor Yellow
+                  Start-Process -FilePath "C:\ollama\ollama.exe" -ArgumentList "serve" `
+                      -WindowStyle Hidden `
+                      -RedirectStandardOutput "$env:TEMP\ollama.out.log" `
+                      -RedirectStandardError  "$env:TEMP\ollama.err.log"
               }
 
               # In log app mỗi 60 giây
@@ -323,6 +393,7 @@ jobs:
         if: always()
         run: |
           Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Get-Process "ollama*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 3
 
           if (Test-Path "$env:RUNNER_TEMP\sync.ps1") {
