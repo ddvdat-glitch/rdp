@@ -50,6 +50,8 @@ jobs:
       OLLAMA_HOST: 127.0.0.1:11434
       OLLAMA_MODELS: C:\ollama-models   # thư mục chứa model (để cache)
       OLLAMA_KEEP_ALIVE: '-1'           # giữ model trong RAM, không tự gỡ
+      OLLAMA_NUM_PARALLEL: '1'          # xử lý lần lượt, đỡ tranh CPU/RAM
+      OLLAMA_MAX_LOADED_MODELS: '1'
     steps:
       # 0. GHI MỐC THỜI GIAN BẮT ĐẦU JOB (UTC epoch -> không bị lệch khi qua 00:00)
       - name: ⏱️ Ghi mốc thời gian
@@ -268,8 +270,8 @@ jobs:
           & "C:\ollama\ollama.exe" --version
           Write-Host "✅ Đã cài Ollama" -ForegroundColor Green
 
-      # 5d. BẬT OLLAMA + TẢI MODEL + NẠP SẴN VÀO RAM
-      - name: 🧠 Bật Ollama & tải qwen2.5:7b
+      # 5d. TẢI MODEL (cần bật server tạm thời để pull)
+      - name: 🧠 Tải model qwen2.5:7b
         run: |
           Start-Process -FilePath "C:\ollama\ollama.exe" -ArgumentList "serve" `
               -WindowStyle Hidden `
@@ -294,13 +296,12 @@ jobs:
           & "C:\ollama\ollama.exe" pull $env:OLLAMA_MODEL
           if ($LASTEXITCODE -ne 0) { throw "Tải model $env:OLLAMA_MODEL thất bại" }
 
-          # Nạp model vào RAM sẵn để bot gọi lần đầu không bị chậm
-          $body = @{ model = $env:OLLAMA_MODEL; prompt = "hi"; stream = $false; keep_alive = -1 } | ConvertTo-Json
-          Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/generate" -Method Post `
-              -ContentType "application/json" -Body $body -TimeoutSec 600 | Out-Null
-
           & "C:\ollama\ollama.exe" list
-          Write-Host "✅ Model $env:OLLAMA_MODEL đã sẵn sàng tại http://127.0.0.1:11434" -ForegroundColor Green
+
+          # Tiến trình bật trong step này sẽ bị runner dọn khi step kết thúc,
+          # nên dừng luôn ở đây; server thật được bật lại trong step 6.
+          Get-Process "ollama*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Write-Host "✅ Đã tải xong model $env:OLLAMA_MODEL" -ForegroundColor Green
 
       # 6. CHẠY npm start + GIỮ PHIÊN + LƯU DỮ LIỆU ĐỊNH KỲ
       - name: ▶️ npm start & duy trì
@@ -336,6 +337,30 @@ jobs:
                   -PassThru
           }
 
+          # Bật Ollama ngay trong step này (sống suốt phiên) + nạp sẵn model vào RAM
+          function Start-Ollama {
+              $p = Start-Process -FilePath "C:\ollama\ollama.exe" -ArgumentList "serve" `
+                  -WindowStyle Hidden `
+                  -RedirectStandardOutput "$env:TEMP\ollama.out.log" `
+                  -RedirectStandardError  "$env:TEMP\ollama.err.log" `
+                  -PassThru
+              for ($i = 0; $i -lt 30; $i++) {
+                  try { Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/version" -TimeoutSec 3 | Out-Null; break }
+                  catch { Start-Sleep -Seconds 2 }
+              }
+              try {
+                  $body = @{ model = $env:OLLAMA_MODEL; prompt = "hi"; stream = $false; keep_alive = -1; options = @{ num_predict = 1 } } | ConvertTo-Json
+                  Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/generate" -Method Post `
+                      -ContentType "application/json" -Body $body -TimeoutSec 600 | Out-Null
+                  Write-Host "✅ Ollama sẵn sàng, model $($env:OLLAMA_MODEL) đã nạp vào RAM" -ForegroundColor Green
+              } catch {
+                  Write-Host "⚠️ Nạp model thất bại: $_" -ForegroundColor Yellow
+              }
+              return $p
+          }
+
+          $null = Start-Ollama
+
           $proc = Start-App
           Start-Sleep -Seconds 8
 
@@ -360,10 +385,7 @@ jobs:
               # Tự khởi động lại Ollama nếu bị chết
               if (-not (Get-Process "ollama" -ErrorAction SilentlyContinue)) {
                   Write-Host "[$(Format-Vn ([DateTimeOffset]::UtcNow))] ⚠️ Ollama dừng, khởi động lại..." -ForegroundColor Yellow
-                  Start-Process -FilePath "C:\ollama\ollama.exe" -ArgumentList "serve" `
-                      -WindowStyle Hidden `
-                      -RedirectStandardOutput "$env:TEMP\ollama.out.log" `
-                      -RedirectStandardError  "$env:TEMP\ollama.err.log"
+                  $null = Start-Ollama
               }
 
               # In log app mỗi 60 giây
