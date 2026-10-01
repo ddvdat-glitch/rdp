@@ -24,8 +24,13 @@ on:
         type: boolean
 
 permissions:
-  contents: read
-  actions: write   # cần để tự kích hoạt lại workflow
+  contents: write   # cần để lưu data.json lên nhánh bot-data
+  actions: write    # cần để tự kích hoạt lại workflow
+
+# Chỉ cho 1 phiên chạy tại một thời điểm (tránh 2 bot chạy song song và ghi đè dữ liệu của nhau)
+concurrency:
+  group: bot-cuadat-runner
+  cancel-in-progress: false
 
 jobs:
   Run-Bot:
@@ -37,6 +42,10 @@ jobs:
       REPO_URL: https://github.com/ddvdat-glitch/botcuadat.git
       DISCORD_TOKEN: ${{ secrets.DISCORD_AUTH_KEY }}
       ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+      DATA_FILE: data.json          # file dữ liệu của bot (nằm ở thư mục gốc của bot)
+      DATA_BRANCH: bot-data         # nhánh dùng để lưu dữ liệu
+      SAVE_EVERY_MINUTES: '5'       # lưu định kỳ mỗi X phút
     steps:
       # 0. GHI MỐC THỜI GIAN BẮT ĐẦU JOB (UTC epoch -> không bị lệch khi qua 00:00)
       - name: ⏱️ Ghi mốc thời gian
@@ -58,6 +67,101 @@ jobs:
           npm install
           if ($LASTEXITCODE -ne 0) { throw "npm install thất bại" }
           Write-Host "✅ npm install xong" -ForegroundColor Green
+
+      # 2b. TẠO SCRIPT ĐỒNG BỘ DỮ LIỆU + KHÔI PHỤC DỮ LIỆU CŨ
+      - name: 💾 Khôi phục dữ liệu
+        run: |
+          @'
+          param([string]$Mode)
+          $ErrorActionPreference = 'Continue'
+
+          $file     = $env:DATA_FILE
+          $branch   = $env:DATA_BRANCH
+          $appDir   = Join-Path $env:GITHUB_WORKSPACE 'app'
+          $local    = Join-Path $appDir $file
+          $repoDir  = Join-Path $env:RUNNER_TEMP 'datarepo'
+          $hashFile = Join-Path $env:RUNNER_TEMP 'lasthash.txt'
+          $url      = "https://x-access-token:$($env:GH_TOKEN)@github.com/$($env:GITHUB_REPOSITORY).git"
+
+          # ================= KHÔI PHỤC =================
+          if ($Mode -eq 'restore') {
+              git ls-remote --exit-code --heads $url $branch *> $null
+              $code = $LASTEXITCODE
+
+              if ($code -eq 2) {
+                  Write-Host "ℹ️ Chưa có nhánh $branch (lần chạy đầu), dùng dữ liệu mặc định của bot"
+                  "DATA_READY=1" >> $env:GITHUB_ENV
+                  exit 0
+              }
+              if ($code -ne 0) {
+                  Write-Host "❌ Không kết nối được tới nhánh $branch (mã lỗi $code)"
+                  exit 1
+              }
+
+              if (Test-Path $repoDir) { Remove-Item $repoDir -Recurse -Force }
+              git clone --branch $branch --single-branch --depth 1 $url $repoDir 2>&1 | Out-Null
+              if ($LASTEXITCODE -ne 0) { Write-Host "❌ Clone nhánh $branch thất bại"; exit 1 }
+
+              $src = Join-Path $repoDir $file
+              if (Test-Path $src) {
+                  Copy-Item $src $local -Force
+                  (Get-FileHash $local -Algorithm SHA256).Hash | Set-Content $hashFile
+                  Write-Host "✅ Đã khôi phục $file từ nhánh $branch"
+              } else {
+                  Write-Host "ℹ️ Nhánh $branch chưa có $file, dùng dữ liệu mặc định"
+              }
+              "DATA_READY=1" >> $env:GITHUB_ENV
+              exit 0
+          }
+
+          # ================= LƯU =================
+          if ($Mode -eq 'save') {
+              # Chưa khôi phục xong thì tuyệt đối không lưu (tránh ghi đè dữ liệu cũ bằng dữ liệu mặc định)
+              if ($env:DATA_READY -ne '1') { Write-Host '⚠️ Chưa khôi phục dữ liệu, bỏ qua bước lưu'; exit 0 }
+              if (-not (Test-Path $local)) { Write-Host "ℹ️ Không thấy $file, bỏ qua"; exit 0 }
+
+              # Kiểm tra JSON hợp lệ (tránh lưu file đang bị ghi dở)
+              try { Get-Content $local -Raw | ConvertFrom-Json -ErrorAction Stop | Out-Null }
+              catch { Write-Host "⚠️ $file đang ghi dở hoặc không hợp lệ, bỏ qua lần lưu này"; exit 0 }
+
+              $hash = (Get-FileHash $local -Algorithm SHA256).Hash
+              if ((Test-Path $hashFile) -and ((Get-Content $hashFile -Raw).Trim() -eq $hash)) {
+                  Write-Host 'ℹ️ Dữ liệu không đổi, bỏ qua'
+                  exit 0
+              }
+
+              # Tạo repo mới mỗi lần -> nhánh chỉ có đúng 1 commit, không phình lịch sử
+              if (Test-Path $repoDir) { Remove-Item $repoDir -Recurse -Force }
+              New-Item -ItemType Directory -Force -Path $repoDir | Out-Null
+              Copy-Item $local (Join-Path $repoDir $file) -Force
+
+              git -C $repoDir init -q
+              git -C $repoDir checkout -q -b $branch
+              git -C $repoDir config user.name  'bot-data'
+              git -C $repoDir config user.email 'bot-data@users.noreply.github.com'
+              git -C $repoDir add -A
+              git -C $repoDir commit -q -m "save $((Get-Date).ToUniversalTime().ToString('s'))Z"
+              git -C $repoDir remote add origin $url
+
+              $ok = $false
+              for ($try = 1; $try -le 3; $try++) {
+                  git -C $repoDir push -q --force origin $branch 2>&1 | Out-Null
+                  if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+                  Start-Sleep -Seconds 3
+              }
+
+              if ($ok) {
+                  $hash | Set-Content $hashFile
+                  Write-Host "💾 Đã lưu $file lên nhánh $branch"
+              } else {
+                  Write-Host '❌ Lưu dữ liệu thất bại sau 3 lần thử'
+              }
+              exit 0
+          }
+          '@ | Set-Content -Path "$env:RUNNER_TEMP\sync.ps1" -Encoding UTF8
+
+          & "$env:RUNNER_TEMP\sync.ps1" restore
+          if ($LASTEXITCODE -ne 0) { throw "Khôi phục dữ liệu thất bại, dừng để tránh mất dữ liệu" }
 
       # 3. TẠO .ENV TỪ .ENV.EXAMPLE + GHI TOKEN
       - name: ⚙️ Cấu hình .env
@@ -138,7 +242,7 @@ jobs:
           "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
           Write-Host "✅ Tailscale IP: $ip" -ForegroundColor Green
 
-      # 6. CHẠY npm start + GIỮ PHIÊN
+      # 6. CHẠY npm start + GIỮ PHIÊN + LƯU DỮ LIỆU ĐỊNH KỲ
       - name: ▶️ npm start & duy trì
         id: run
         env:
@@ -182,7 +286,9 @@ jobs:
           Write-Host "│ ⏰ Kết thúc: $(Format-Vn $endTime) (giờ VN)" -ForegroundColor White
           Write-Host "└────────────────────────────────────────┘" -ForegroundColor Cyan
 
-          $lastLog = [DateTimeOffset]::UtcNow
+          $saveEvery = [int]$env:SAVE_EVERY_MINUTES
+          $lastLog  = [DateTimeOffset]::UtcNow
+          $lastSave = [DateTimeOffset]::UtcNow
           while ([DateTimeOffset]::UtcNow -lt $endTime) {
               # Tự khởi động lại nếu app chết
               if ($proc.HasExited) {
@@ -199,25 +305,39 @@ jobs:
                   Write-Host "⏳ Còn khoảng $left phút" -ForegroundColor Blue
                   $lastLog = [DateTimeOffset]::UtcNow
               }
+
+              # Lưu dữ liệu định kỳ
+              if (([DateTimeOffset]::UtcNow - $lastSave).TotalMinutes -ge $saveEvery) {
+                  & "$env:RUNNER_TEMP\sync.ps1" save
+                  $lastSave = [DateTimeOffset]::UtcNow
+              }
+
               Start-Sleep -Seconds 10
           }
 
           Write-Host "🎯 HẾT THỜI GIAN PHIÊN NÀY!" -ForegroundColor Red
+          exit 0
 
-      # 7. DỌN DẸP
+      # 7. DỌN DẸP (dừng bot trước rồi mới lưu lần cuối để file không bị ghi dở)
       - name: 🧹 Dọn dẹp
         if: always()
         run: |
           Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+
+          if (Test-Path "$env:RUNNER_TEMP\sync.ps1") {
+              & "$env:RUNNER_TEMP\sync.ps1" save
+          }
+
           & "$env:ProgramFiles\Tailscale\tailscale.exe" down 2>$null
           netsh advfirewall firewall delete rule name="BotApp-In" 2>$null
           Write-Host "🎉 Dọn dẹp hoàn tất!" -ForegroundColor Green
+          exit 0
 
       # 8. TỰ CHẠY LẠI PHIÊN MỚI (chỉ khi phiên vừa rồi chạy hết giờ bình thường, không phải bị hủy/lỗi)
       - name: 🔁 Kích hoạt phiên tiếp theo
         if: ${{ always() && inputs.auto_restart && steps.run.outcome == 'success' }}
         env:
-          GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           DURATION: ${{ inputs.duration }}
         run: |
