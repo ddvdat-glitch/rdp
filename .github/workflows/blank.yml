@@ -106,11 +106,16 @@ jobs:
               }
 
               if (Test-Path $repoDir) { Remove-Item $repoDir -Recurse -Force }
-              git clone --branch $branch --single-branch --depth 1 $url $repoDir 2>&1 | Out-Null
+              git -c core.autocrlf=false clone --branch $branch --single-branch --depth 1 $url $repoDir 2>&1 | Out-Null
               if ($LASTEXITCODE -ne 0) { Write-Host "❌ Clone nhánh $branch thất bại"; exit 1 }
 
               $src = Join-Path $repoDir $file
               if (Test-Path $src) {
+                  node -e "JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'))" $src 2>$null
+                  if ($LASTEXITCODE -ne 0) {
+                      Write-Host "::error::$file trên nhánh $branch không đọc được (hỏng hoặc có BOM). Dừng để bot không ghi đè bằng dữ liệu mặc định."
+                      exit 1
+                  }
                   Copy-Item $src $local -Force
                   (Get-FileHash $local -Algorithm SHA256).Hash | Set-Content $hashFile
                   Write-Host "✅ Đã khôi phục $file từ nhánh $branch"
@@ -128,8 +133,11 @@ jobs:
               if (-not (Test-Path $local)) { Write-Host "ℹ️ Không thấy $file, bỏ qua"; exit 0 }
 
               # Kiểm tra JSON hợp lệ (tránh lưu file đang bị ghi dở)
-              try { Get-Content $local -Raw | ConvertFrom-Json -ErrorAction Stop | Out-Null }
-              catch { Write-Host "⚠️ $file đang ghi dở hoặc không hợp lệ, bỏ qua lần lưu này"; exit 0 }
+              node -e "JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'))" $local 2>$null
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Host "::warning::$file đang ghi dở hoặc không hợp lệ, bỏ qua lần lưu này"
+                  exit 0
+              }
 
               $hash = (Get-FileHash $local -Algorithm SHA256).Hash
               if ((Test-Path $hashFile) -and ((Get-Content $hashFile -Raw).Trim() -eq $hash)) {
@@ -144,6 +152,7 @@ jobs:
 
               git -C $repoDir init -q
               git -C $repoDir checkout -q -b $branch
+              git -C $repoDir config core.autocrlf false
               git -C $repoDir config user.name  'bot-data'
               git -C $repoDir config user.email 'bot-data@users.noreply.github.com'
               git -C $repoDir add -A
@@ -161,7 +170,7 @@ jobs:
                   $hash | Set-Content $hashFile
                   Write-Host "💾 Đã lưu $file lên nhánh $branch"
               } else {
-                  Write-Host '❌ Lưu dữ liệu thất bại sau 3 lần thử'
+                  Write-Host '::warning::Lưu dữ liệu lên nhánh bot-data thất bại sau 3 lần thử'
               }
               exit 0
           }
