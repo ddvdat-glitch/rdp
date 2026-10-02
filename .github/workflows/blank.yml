@@ -46,7 +46,8 @@ jobs:
       DATA_FILE: data.json          # file dữ liệu của bot (nằm ở thư mục gốc của bot)
       DATA_BRANCH: bot-data         # nhánh dùng để lưu dữ liệu
       SAVE_EVERY_MINUTES: '5'       # lưu định kỳ mỗi X phút
-      OLLAMA_MODEL: qwen2.5:7b
+      # Model: Qwen2.5-7B-Instruct-Uncensored (bản GGUF của QuantFactory trên Hugging Face)
+      OLLAMA_MODEL: hf.co/QuantFactory/Qwen2.5-7B-Instruct-Uncensored-GGUF:Q4_K_M
       OLLAMA_HOST: 127.0.0.1:11434
       OLLAMA_MODELS: C:\ollama-models   # thư mục chứa model (để cache)
       OLLAMA_KEEP_ALIVE: '-1'           # giữ model trong RAM, không tự gỡ
@@ -253,11 +254,12 @@ jobs:
           Write-Host "✅ Tailscale IP: $ip" -ForegroundColor Green
 
       # 5b. CACHE MODEL OLLAMA (các phiên sau khỏi tải lại ~4.7GB)
+      #     Đổi key này mỗi khi đổi model để khỏi dùng nhầm cache của model cũ
       - name: 📦 Cache model Ollama
         uses: actions/cache@v4
         with:
           path: C:\ollama-models
-          key: ollama-models-qwen2.5-7b-v1
+          key: ollama-models-qwen25-7b-uncensored-v1
 
       # 5c. CÀI OLLAMA
       - name: 🦙 Cài Ollama
@@ -271,7 +273,7 @@ jobs:
           Write-Host "✅ Đã cài Ollama" -ForegroundColor Green
 
       # 5d. TẢI MODEL (cần bật server tạm thời để pull)
-      - name: 🧠 Tải model qwen2.5:7b
+      - name: 🧠 Tải model Qwen2.5-7B Uncensored
         run: |
           Start-Process -FilePath "C:\ollama\ollama.exe" -ArgumentList "serve" `
               -WindowStyle Hidden `
