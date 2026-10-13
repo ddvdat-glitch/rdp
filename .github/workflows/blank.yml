@@ -9,7 +9,7 @@ on:
         default: '5h40m'
         type: choice
         options:
-        - '1h'
+        - '5m'
         - '3h'
         - '5h40m'
       auto_restart:
@@ -376,7 +376,7 @@ jobs:
           $durationInput = '${{ github.event.inputs.duration }}'
           $durationMinutes = 340
           switch ($durationInput) {
-              '1h' { $durationMinutes = 60 }
+              '5m' { $durationMinutes = 5 }
               '3h' { $durationMinutes = 180 }
               '5h40m' { $durationMinutes = 340 }
               default { $durationMinutes = 340 }
