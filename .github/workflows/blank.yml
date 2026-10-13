@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       duration:
-        description: '🕐 Thời gian sử dụng'
+        description: '🕐 Thời gian sử dụng (tính từ lúc job bắt đầu)'
         required: false
         default: '5h40m'
         type: choice
         options:
-        - '5m'
+        - '1h'
         - '3h'
         - '5h40m'
       auto_restart:
@@ -34,21 +34,37 @@ concurrency:
 jobs:
   Premium-RDP-Setup:
     runs-on: windows-latest
-    timeout-minutes: 340
+    # Giới hạn tối đa của GitHub là 360. Phiên 5h40m (340) + lưu cuối + dọn dẹp vẫn nằm trong 355.
+    timeout-minutes: 355
 
     env:
-      SHARED_ROOT: ${{ inputs.shared_root }}
       DATA_BRANCH: rdp-data
       DATA_DIR: shared-rdp
 
     steps:
+      # ───────────────────────────────────────────────
+      # 1. CHUẨN BỊ
+      # ───────────────────────────────────────────────
       - name: 🧱 Chuẩn bị ổ lưu dữ liệu chung
         shell: pwsh
+        env:
+          INPUT_SHARED_ROOT: ${{ inputs.shared_root }}
+          INPUT_DURATION: ${{ inputs.duration }}
         run: |
-          $customRoot = '${{ inputs.shared_root }}'
+          # Mốc bắt đầu job (epoch) - thời lượng phiên tính từ mốc này, đã gồm cả thời gian setup
+          "JOB_START_EPOCH=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" >> $env:GITHUB_ENV
+
+          switch ($env:INPUT_DURATION) {
+              '1h'    { $total = 60;  $display = '1 giờ' }
+              '3h'    { $total = 180; $display = '3 giờ' }
+              default { $total = 340; $display = '5 giờ 40 phút' }
+          }
+          "TOTAL_MINUTES=$total" >> $env:GITHUB_ENV
+          "DISPLAY_TIME=$display" >> $env:GITHUB_ENV
+
           $candidates = @()
-          if (-not [string]::IsNullOrWhiteSpace($customRoot)) {
-              $candidates += $customRoot.TrimEnd('\')
+          if (-not [string]::IsNullOrWhiteSpace($env:INPUT_SHARED_ROOT)) {
+              $candidates += $env:INPUT_SHARED_ROOT.TrimEnd('\')
           }
           $candidates += 'D:\AISTV-SHARED'
           $candidates += 'E:\AISTV-SHARED'
@@ -58,116 +74,170 @@ jobs:
           $selected = $null
           foreach ($candidate in ($candidates | Select-Object -Unique)) {
               if ($candidate -match '^[A-Za-z]:') {
-                  $drive = $candidate.Substring(0, 2)
-                  if (Test-Path $drive) {
-                      $selected = $candidate
-                      break
-                  }
+                  if (Test-Path $candidate.Substring(0, 2)) { $selected = $candidate; break }
               } else {
-                  $selected = $candidate
-                  break
+                  $selected = $candidate; break
               }
           }
-
-          if (-not $selected) {
-              $selected = Join-Path $env:RUNNER_TEMP 'AISTV-SHARED'
-          }
+          if (-not $selected) { $selected = Join-Path $env:RUNNER_TEMP 'AISTV-SHARED' }
 
           $sessionDir = Join-Path $selected 'sessions'
-          New-Item -ItemType Directory -Force -Path $selected | Out-Null
-          New-Item -ItemType Directory -Force -Path $sessionDir | Out-Null
+          $dataDir    = Join-Path $sessionDir $env:DATA_DIR
+          New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
 
           "SHARED_ROOT=$selected" >> $env:GITHUB_ENV
           "SHARED_SESSION_DIR=$sessionDir" >> $env:GITHUB_ENV
-          "SHARED_STATE_FILE=$($sessionDir)\rdp-session-state.json" >> $env:GITHUB_ENV
-          "SHARED_PASSWORD_FILE=$($sessionDir)\rdp_password.txt" >> $env:GITHUB_ENV
+          "SHARED_DATA_DIR=$dataDir" >> $env:GITHUB_ENV
+          "SHARED_STATE_FILE=$(Join-Path $sessionDir 'rdp-session-state.json')" >> $env:GITHUB_ENV
 
           Write-Host "✅ Ổ dữ liệu chung: $selected" -ForegroundColor Green
 
-      - name: ♻️ Khôi phục dữ liệu cũ từ ổ chung
+      - name: 🧰 Tạo script lưu dữ liệu (dùng lại nhiều lần)
         shell: pwsh
         run: |
+          $script = @'
+          param([string]$Reason = 'save')
+          $ErrorActionPreference = 'Continue'
+
+          if ($env:DATA_RESTORED -ne '1') {
+              Write-Host '⚠️ Dữ liệu chưa được khôi phục xong, bỏ qua lưu để tránh ghi đè dữ liệu cũ' -ForegroundColor Yellow
+              exit 0
+          }
+          $sessionDir = $env:SHARED_SESSION_DIR
+          if (-not $sessionDir -or -not (Test-Path $sessionDir)) {
+              Write-Host 'ℹ️ Chưa có thư mục dữ liệu, bỏ qua'; exit 0
+          }
+          if (-not $env:GH_TOKEN) { Write-Host '⚠️ Thiếu GH_TOKEN'; exit 1 }
+
+          # Cập nhật mốc thời gian trong state
           $stateFile = $env:SHARED_STATE_FILE
-          $passFile = $env:SHARED_PASSWORD_FILE
-
-          if (Test-Path $stateFile) {
+          if ($stateFile -and (Test-Path $stateFile)) {
               try {
-                  $state = Get-Content -Raw $stateFile | ConvertFrom-Json
-                  if ($state.user) { "RESTORE_USER=$($state.user)" >> $env:GITHUB_ENV }
-                  if ($state.password) { "RESTORE_PASS=$($state.password)" >> $env:GITHUB_ENV }
-                  Write-Host "✅ Khôi phục state từ ổ chung thành công" -ForegroundColor Green
-              } catch {
-                  Write-Host "⚠️ File state cũ không đọc được, bỏ qua" -ForegroundColor Yellow
+                  $st = Get-Content -Raw $stateFile | ConvertFrom-Json
+                  $st.lastUpdatedUtc = (Get-Date).ToUniversalTime().ToString('o')
+                  $st | ConvertTo-Json -Depth 5 -Compress | Set-Content -Path $stateFile -Encoding UTF8
+              } catch {}
+          }
+
+          $work = Join-Path $env:RUNNER_TEMP 'data-push'
+          if (Test-Path $work) { Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue }
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+
+          robocopy $sessionDir $work /E /XD .git /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+          $global:LASTEXITCODE = 0
+
+          # Git giới hạn 100MB/file
+          Get-ChildItem $work -Recurse -File -Force -ErrorAction SilentlyContinue |
+              Where-Object { $_.Length -gt 95MB } |
+              ForEach-Object {
+                  Write-Host "⚠️ Bỏ qua file >95MB: $($_.FullName.Substring($work.Length))" -ForegroundColor Yellow
+                  Remove-Item $_.FullName -Force
               }
+
+          $repoUrl = "https://x-access-token:$($env:GH_TOKEN)@github.com/$($env:GITHUB_REPOSITORY).git"
+          $branch  = $env:DATA_BRANCH
+          $ok = $false
+          try {
+              git -C $work init -q 2>&1 | Out-Null
+              git -C $work checkout -q -b $branch 2>&1 | Out-Null
+              git -C $work config core.autocrlf false
+              git -C $work config user.name 'rdp-data'
+              git -C $work config user.email 'rdp-data@users.noreply.github.com'
+              git -C $work add -A 2>&1 | Out-Null
+              git -C $work commit -q -m "$Reason $((Get-Date).ToUniversalTime().ToString('s'))Z" 2>&1 | Out-Null
+              git -C $work remote add origin $repoUrl
+
+              for ($try = 1; $try -le 3; $try++) {
+                  git -C $work push -q --force origin $branch 2>&1 | Out-Null
+                  if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+                  Start-Sleep -Seconds 5
+              }
+          } finally {
+              # Xóa thư mục tạm (chứa token trong git config)
+              Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
           }
 
-          if (Test-Path $passFile) {
-              Copy-Item $passFile $env:TEMP\rdp_password.txt -Force
-              Write-Host "✅ Khôi phục mật khẩu từ ổ chung" -ForegroundColor Green
+          if ($ok) {
+              Write-Host "✅ [$Reason] Đã đồng bộ dữ liệu lên nhánh $branch" -ForegroundColor Green
+              exit 0
           } else {
-              Write-Host "ℹ️ Chưa có dữ liệu cũ trên ổ chung" -ForegroundColor Cyan
+              Write-Host "⚠️ [$Reason] Đồng bộ lên nhánh $branch thất bại (dữ liệu vẫn còn trên ổ chung)" -ForegroundColor Yellow
+              exit 1
           }
+          '@
+          Set-Content -Path (Join-Path $env:RUNNER_TEMP 'save-data.ps1') -Value $script -Encoding UTF8
+          Write-Host '✅ Đã tạo save-data.ps1' -ForegroundColor Green
 
-      - name: 🌍 Khôi phục dữ liệu từ nhánh GitHub
+      # ───────────────────────────────────────────────
+      # 2. KHÔI PHỤC DỮ LIỆU TỪ NHÁNH GITHUB
+      # ───────────────────────────────────────────────
+      - name: ♻️ Khôi phục dữ liệu từ nhánh GitHub
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $repoUrl = "https://x-access-token:$($env:GH_TOKEN)@github.com/${{ github.repository }}.git"
-          $branch = $env:DATA_BRANCH
-          $repoTemp = Join-Path $env:RUNNER_TEMP 'rdp-data-repo'
-          $targetDir = Join-Path $env:SHARED_SESSION_DIR $env:DATA_DIR
+          $branch  = $env:DATA_BRANCH
+          $tmp     = Join-Path $env:RUNNER_TEMP 'rdp-data-repo'
+          if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
 
-          if (Test-Path $repoTemp) { Remove-Item $repoTemp -Recurse -Force }
-          git ls-remote --exit-code --heads $repoUrl $branch *> $null
-          if ($LASTEXITCODE -eq 2) {
-              Write-Host "ℹ️ Chưa có nhánh $branch, dùng dữ liệu hiện tại trên ổ chung" -ForegroundColor Cyan
-              New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
-              "DATA_SYNC_READY=0" >> $env:GITHUB_ENV
+          git ls-remote --exit-code --heads $repoUrl $branch 2>&1 | Out-Null
+          $code = $LASTEXITCODE
+
+          if ($code -eq 2) {
+              Write-Host "ℹ️ Chưa có nhánh $branch - đây là phiên đầu tiên" -ForegroundColor Cyan
+              "DATA_RESTORED=1" >> $env:GITHUB_ENV
               exit 0
           }
-
-          if ($LASTEXITCODE -ne 0) {
-              Write-Host "❌ Không kết nối được nhánh $branch" -ForegroundColor Red
+          if ($code -ne 0) {
+              # Dừng hẳn để không ghi đè dữ liệu cũ bằng dữ liệu rỗng
+              Write-Host "❌ Không kết nối được GitHub để kiểm tra nhánh $branch" -ForegroundColor Red
               exit 1
           }
 
-          git -c core.autocrlf=false clone --branch $branch --single-branch --depth 1 $repoUrl $repoTemp 2>$null
+          git -c core.autocrlf=false clone --branch $branch --single-branch --depth 1 $repoUrl $tmp 2>&1 | Out-Null
           if ($LASTEXITCODE -ne 0) {
               Write-Host "❌ Clone nhánh $branch thất bại" -ForegroundColor Red
               exit 1
           }
 
-          $sourceDir = Join-Path $repoTemp $env:DATA_DIR
-          if (Test-Path $sourceDir) {
-              Copy-Item $sourceDir $env:SHARED_SESSION_DIR -Recurse -Force
-              Write-Host "✅ Đã phục hồi dữ liệu từ nhánh $branch" -ForegroundColor Green
-          } else {
-              Write-Host "ℹ️ Nhánh $branch chưa có thư mục $env:DATA_DIR, tiếp tục với dữ liệu cục bộ" -ForegroundColor Cyan
+          robocopy $tmp $env:SHARED_SESSION_DIR /E /XD .git /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+          $global:LASTEXITCODE = 0
+          Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $env:SHARED_DATA_DIR | Out-Null
+          Write-Host "✅ Đã phục hồi dữ liệu từ nhánh $branch" -ForegroundColor Green
+
+          if (Test-Path $env:SHARED_STATE_FILE) {
+              try {
+                  $state = Get-Content -Raw $env:SHARED_STATE_FILE | ConvertFrom-Json
+                  if ($state.password) {
+                      "RESTORE_PASS=$($state.password)" >> $env:GITHUB_ENV
+                      Write-Host "✅ Đã khôi phục mật khẩu phiên trước" -ForegroundColor Green
+                  }
+              } catch {
+                  Write-Host "⚠️ File state cũ không đọc được, bỏ qua" -ForegroundColor Yellow
+              }
           }
 
-          "DATA_SYNC_READY=1" >> $env:GITHUB_ENV
+          "DATA_RESTORED=1" >> $env:GITHUB_ENV
+          exit 0
 
-      # BANNER CHÀO MỪNG
+      # ───────────────────────────────────────────────
+      # 3. BANNER
+      # ───────────────────────────────────────────────
       - name: 🎯 KHỞI ĐỘNG HỆ THỐNG
         shell: pwsh
         run: |
           Write-Host ""
-          Write-Host ""
           Write-Host "🤖 AI STV PREMIUM RDP SERVER" -ForegroundColor Yellow
           Write-Host "⚡ Powered by AI STV" -ForegroundColor Green
           Write-Host "🗂️ Shared Drive: $env:SHARED_ROOT" -ForegroundColor Cyan
-          Write-Host "🕒 Thời gian: ${{ github.event.inputs.duration }}" -ForegroundColor Magenta
-          Write-Host ""
+          Write-Host "🕒 Thời gian: $env:DISPLAY_TIME" -ForegroundColor Magenta
+          Write-Host "✅ Hệ thống đã sẵn sàng!" -ForegroundColor Green
 
-          $frames = @('⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷')
-          for($i=0; $i -lt 10; $i++) {
-              Write-Host "`r🚀 Đang khởi tạo hệ thống... $($frames[$i % 8])" -NoNewline -ForegroundColor Blue
-              Start-Sleep -Milliseconds 100
-          }
-          Write-Host "`r✅ Hệ thống đã sẵn sàng!                    " -ForegroundColor Green
-
-      # CẤU HÌNH NÂNG CAO
+      # ───────────────────────────────────────────────
+      # 4. CẤU HÌNH RDP
+      # ───────────────────────────────────────────────
       - name: 🔧 CẤU HÌNH HỆ THỐNG
         shell: pwsh
         run: |
@@ -178,16 +248,15 @@ jobs:
               @{Name="Bật Remote Desktop"; Script={
                   Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
               }},
-              @{Name="Tắt xác thực mạng"; Script={
-                  Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0 -Force
-              }},
               @{Name="Cấu hình bảo mật RDP"; Script={
-                  Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'SecurityLayer' -Value 0 -Force
-                  Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0 -Force
+                  $p = 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+                  Set-ItemProperty -Path $p -Name 'UserAuthentication' -Value 0 -Force
+                  Set-ItemProperty -Path $p -Name 'SecurityLayer' -Value 0 -Force
               }},
-              @{Name="Mở port 3389 firewall"; Script={
-                  netsh advfirewall firewall add rule name="RDP-Premium" dir=in action=allow protocol=TCP localport=3389 profile=any
-                  netsh advfirewall firewall add rule name="RDP-Premium-Out" dir=out action=allow protocol=TCP localport=3389 profile=any
+              @{Name="Mở port 3389 (chỉ cho dải Tailscale)"; Script={
+                  Remove-NetFirewallRule -DisplayName 'RDP-Premium' -ErrorAction SilentlyContinue
+                  New-NetFirewallRule -DisplayName 'RDP-Premium' -Direction Inbound -Action Allow `
+                      -Protocol TCP -LocalPort 3389 -RemoteAddress '100.64.0.0/10' -Profile Any | Out-Null
               }},
               @{Name="Khởi động dịch vụ"; Script={
                   Set-Service -Name TermService -StartupType Automatic -ErrorAction SilentlyContinue
@@ -197,90 +266,90 @@ jobs:
               }}
           )
 
-          foreach($step in $steps) {
-              Write-Host "│ 📋 $($step.Name)..." -NoNewline -ForegroundColor White
+          foreach ($step in $steps) {
               try {
                   & $step.Script
-                  Write-Host "`r│ ✅ $($step.Name)" -ForegroundColor Green
+                  Write-Host "│ ✅ $($step.Name)" -ForegroundColor Green
               } catch {
-                  Write-Host "`r│ ⚠️  $($step.Name) - Đã bỏ qua lỗi nhỏ" -ForegroundColor Yellow
+                  Write-Host "│ ⚠️  $($step.Name) - bỏ qua lỗi nhỏ: $($_.Exception.Message)" -ForegroundColor Yellow
               }
-              Start-Sleep -Milliseconds 500
           }
-
           Write-Host "🎯 Cấu hình hoàn tất!" -ForegroundColor Green
+          exit 0
 
-      # TẠO USER PREMIUM - (tối ưu mật khẩu)
+      # ───────────────────────────────────────────────
+      # 5. TẠO TÀI KHOẢN
+      # ───────────────────────────────────────────────
       - name: 👤 TẠO TÀI KHOẢN PREMIUM
         shell: pwsh
+        env:
+          RDP_PASSWORD_SECRET: ${{ secrets.RDP_PASSWORD }}
         run: |
           Write-Host ""
           Write-Host "👤 ĐANG TẠO TÀI KHOẢN PREMIUM" -ForegroundColor Yellow
 
-          function New-PremiumPassword {
-              param()
-              $upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
-              $lower = 'abcdefghijkmnpqrstuvwxyz'
-              $numbers = '23456789'
-              $all = $upper + $lower + $numbers
-
-              $pw = ''
-              $pw += $upper[(Get-Random -Minimum 0 -Maximum $upper.Length)]
-              $pw += $lower[(Get-Random -Minimum 0 -Maximum $lower.Length)]
-              $pw += $numbers[(Get-Random -Minimum 0 -Maximum $numbers.Length)]
-
-              for ($i = 1; $i -le 5; $i++) {
-                  $pw += $all[(Get-Random -Minimum 0 -Maximum $all.Length)]
-              }
-
-              return -join ($pw.ToCharArray() | Sort-Object { Get-Random })
+          function Get-Pick([string]$s) {
+              $s[[System.Security.Cryptography.RandomNumberGenerator]::GetInt32($s.Length)]
           }
 
-          if ($env:RESTORE_PASS) {
-              $matKhau = $env:RESTORE_PASS
-              Write-Host "│ ℹ️  Dùng mật khẩu đã lưu trên ổ chung" -ForegroundColor Blue
-          } elseif ($env:CUSTOM_RDP_PASS) {
-              $matKhau = $env:CUSTOM_RDP_PASS
-              Write-Host "│ ℹ️  Dùng mật khẩu tùy chỉnh từ env" -ForegroundColor Blue
+          function New-PremiumPassword {
+              $upper   = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
+              $lower   = 'abcdefghijkmnpqrstuvwxyz'
+              $numbers = '23456789'
+              $all     = $upper + $lower + $numbers
+              $chars = @((Get-Pick $upper), (Get-Pick $lower), (Get-Pick $numbers))
+              for ($i = 1; $i -le 9; $i++) { $chars += (Get-Pick $all) }
+              -join ($chars | Sort-Object { [System.Security.Cryptography.RandomNumberGenerator]::GetInt32([int]::MaxValue) })
+          }
+
+          # Ưu tiên: secret RDP_PASSWORD > mật khẩu đã lưu > tạo mới
+          if ($env:RDP_PASSWORD_SECRET) {
+              $matKhau = $env:RDP_PASSWORD_SECRET; $source = 'secret'
+              Write-Host "│ ℹ️  Dùng mật khẩu từ secret RDP_PASSWORD" -ForegroundColor Blue
+          } elseif ($env:RESTORE_PASS) {
+              $matKhau = $env:RESTORE_PASS; $source = 'restored'
+              Write-Host "│ ℹ️  Dùng mật khẩu đã lưu từ phiên trước" -ForegroundColor Blue
           } else {
-              $matKhau = New-PremiumPassword
+              $matKhau = New-PremiumPassword; $source = 'generated'
+              Write-Host "│ ℹ️  Tạo mật khẩu mới" -ForegroundColor Blue
           }
 
           $securePass = ConvertTo-SecureString $matKhau -AsPlainText -Force
 
-          try {
+          if (Get-LocalUser -Name 'AISTV-PREMIUM' -ErrorAction SilentlyContinue) {
               Remove-LocalUser -Name 'AISTV-PREMIUM' -ErrorAction SilentlyContinue
               Write-Host "│ ✅ Đã xóa user cũ" -ForegroundColor Green
-          } catch {
-              Write-Host "│ ℹ️  Không có user cũ để xóa" -ForegroundColor Blue
           }
 
           try {
-              New-LocalUser -Name 'AISTV-PREMIUM' -Password $securePass -AccountNeverExpires -Description 'AI STV Premium Account'
-              Write-Host "│ ✅ Đã tạo user mới" -ForegroundColor Green
-
-              try {
-                  Set-LocalUser -Name 'AISTV-PREMIUM' -PasswordNeverExpires $true -ErrorAction SilentlyContinue
-              } catch {}
-
+              New-LocalUser -Name 'AISTV-PREMIUM' -Password $securePass -AccountNeverExpires -PasswordNeverExpires -Description 'AI STV Premium Account' | Out-Null
               Add-LocalGroupMember -Group 'Administrators' -Member 'AISTV-PREMIUM' -ErrorAction SilentlyContinue
               Add-LocalGroupMember -Group 'Remote Desktop Users' -Member 'AISTV-PREMIUM' -ErrorAction SilentlyContinue
-              Add-LocalGroupMember -Group 'Users' -Member 'AISTV-PREMIUM' -ErrorAction SilentlyContinue
               Enable-LocalUser -Name 'AISTV-PREMIUM'
-
-              Write-Host "│ ✅ Đã cấp quyền Administrator & RDP" -ForegroundColor Green
+              Write-Host "│ ✅ Đã tạo user & cấp quyền Administrator + RDP" -ForegroundColor Green
           } catch {
               Write-Host "│ ❌ Lỗi tạo user: $($_.Exception.Message)" -ForegroundColor Red
               exit 1
           }
 
-          echo "RDP_USER=AISTV-PREMIUM" >> $env:GITHUB_ENV
-          echo "RDP_PASS=$matKhau" >> $env:GITHUB_ENV
-          "$matKhau" | Set-Content -Path $env:TEMP\rdp_password.txt -Encoding UTF8
+          "RDP_USER=AISTV-PREMIUM" >> $env:GITHUB_ENV
+          "RDP_PASS=$matKhau" >> $env:GITHUB_ENV
+          "RDP_PASS_SOURCE=$source" >> $env:GITHUB_ENV
 
-          Write-Host "✅ Tài khoản: AISTV-PREMIUM đã sẵn sàng" -ForegroundColor Green
+          # Shortcut tới thư mục dữ liệu chung trên Desktop (mọi user)
+          try {
+              $ws  = New-Object -ComObject WScript.Shell
+              $lnk = $ws.CreateShortcut('C:\Users\Public\Desktop\AISTV-SHARED.lnk')
+              $lnk.TargetPath = $env:SHARED_DATA_DIR
+              $lnk.Save()
+              Write-Host "│ ✅ Đã tạo shortcut AISTV-SHARED trên Desktop" -ForegroundColor Green
+          } catch {
+              Write-Host "│ ⚠️  Không tạo được shortcut" -ForegroundColor Yellow
+          }
 
-      # KIỂM TRA QUYỀN ĐĂNG NHẬP
+          Write-Host "✅ Tài khoản AISTV-PREMIUM đã sẵn sàng" -ForegroundColor Green
+          exit 0
+
       - name: 🔍 KIỂM TRA QUYỀN HỆ THỐNG
         shell: pwsh
         run: |
@@ -288,38 +357,21 @@ jobs:
           Write-Host "🔍 KIỂM TRA QUYỀN ĐĂNG NHẬP" -ForegroundColor Yellow
 
           $user = Get-LocalUser -Name 'AISTV-PREMIUM' -ErrorAction SilentlyContinue
-          if ($user) {
-              Write-Host "│ ✅ User AISTV-PREMIUM tồn tại" -ForegroundColor Green
-              Write-Host "│ 📊 Trạng thái: $($user.Enabled)" -ForegroundColor White
-          } else {
-              Write-Host "│ ❌ User không tồn tại" -ForegroundColor Red
-              exit 1
-          }
+          if (-not $user) { Write-Host "│ ❌ User không tồn tại" -ForegroundColor Red; exit 1 }
+          Write-Host "│ ✅ User tồn tại (Enabled: $($user.Enabled))" -ForegroundColor Green
 
           $isAdmin = (Get-LocalGroupMember -Group 'Administrators' | Where-Object { $_.Name -like '*AISTV-PREMIUM' }).Count -gt 0
-          if ($isAdmin) {
-              Write-Host "│ ✅ Có quyền Administrator" -ForegroundColor Green
-          } else {
-              Write-Host "│ ❌ Không có quyền Administrator" -ForegroundColor Red
-          }
+          $isRdp   = (Get-LocalGroupMember -Group 'Remote Desktop Users' | Where-Object { $_.Name -like '*AISTV-PREMIUM' }).Count -gt 0
+          Write-Host "│ $(if ($isAdmin) {'✅'} else {'❌'}) Quyền Administrator"
+          Write-Host "│ $(if ($isRdp) {'✅'} else {'❌'}) Quyền Remote Desktop"
 
-          $isRDPUser = (Get-LocalGroupMember -Group 'Remote Desktop Users' | Where-Object { $_.Name -like '*AISTV-PREMIUM' }).Count -gt 0
-          if ($isRDPUser) {
-              Write-Host "│ ✅ Có quyền Remote Desktop" -ForegroundColor Green
-          } else {
-              Write-Host "│ ❌ Không có quyền Remote Desktop" -ForegroundColor Red
-          }
+          $svc = Get-Service -Name TermService -ErrorAction SilentlyContinue
+          Write-Host "│ $(if ($svc.Status -eq 'Running') {'✅'} else {'❌'}) TermService: $($svc.Status)"
+          exit 0
 
-          $termService = Get-Service -Name TermService -ErrorAction SilentlyContinue
-          if ($termService.Status -eq 'Running') {
-              Write-Host "│ ✅ Dịch vụ TermService đang chạy" -ForegroundColor Green
-          } else {
-              Write-Host "│ ❌ Dịch vụ TermService không chạy" -ForegroundColor Red
-          }
-
-          Write-Host "🎯 Kiểm tra hoàn tất!" -ForegroundColor Green
-
-      # TAILSCALE PREMIUM
+      # ───────────────────────────────────────────────
+      # 6. TAILSCALE
+      # ───────────────────────────────────────────────
       - name: 🌐 THIẾT LẬP MẠNG PREMIUM
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
@@ -328,226 +380,191 @@ jobs:
           Write-Host ""
           Write-Host "🌐 ĐANG THIẾT LẬP KẾT NỐI MẠNG" -ForegroundColor Yellow
 
-          try {
-              $msiPath = "$env:TEMP\tailscale-premium.msi"
-              Invoke-WebRequest -Uri 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi' -OutFile $msiPath
-              Start-Process msiexec.exe -ArgumentList '/i', "`"$msiPath`"", '/quiet', '/norestart' -Wait
-              Remove-Item $msiPath -Force -ErrorAction SilentlyContinue
-              Write-Host "│ ✅ Cài đặt Tailscale thành công" -ForegroundColor Green
-          } catch {
-              Write-Host "│ ❌ Lỗi cài đặt Tailscale" -ForegroundColor Red
+          if (-not $env:TAILSCALE_AUTH_KEY) {
+              Write-Host "❌ Thiếu secret TAILSCALE_AUTH_KEY" -ForegroundColor Red
+              exit 1
           }
+
+          $msiPath = "$env:TEMP\tailscale-premium.msi"
+          Invoke-WebRequest -Uri 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi' -OutFile $msiPath
+          Start-Process msiexec.exe -ArgumentList '/i', "`"$msiPath`"", '/quiet', '/norestart' -Wait
+          Remove-Item $msiPath -Force -ErrorAction SilentlyContinue
+          Write-Host "│ ✅ Đã cài Tailscale" -ForegroundColor Green
 
           Start-Sleep -Seconds 10
+          $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
-          try {
-              & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=ai-stv-premium-$env:GITHUB_RUN_ID --accept-routes --accept-dns --reset
-              Write-Host "│ ✅ Kết nối Tailscale thành công" -ForegroundColor Green
-          } catch {
-              Write-Host "│ ❌ Lỗi kết nối Tailscale" -ForegroundColor Red
+          & $ts up "--authkey=$($env:TAILSCALE_AUTH_KEY)" "--hostname=ai-stv-premium-$($env:GITHUB_RUN_ID)" --accept-routes --accept-dns --reset
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "❌ Lỗi kết nối Tailscale" -ForegroundColor Red
+              exit 1
           }
+          Write-Host "│ ✅ Kết nối Tailscale thành công" -ForegroundColor Green
 
-          Write-Host "🔄 Đang lấy địa chỉ IP..." -NoNewline -ForegroundColor Blue
           $ip = $null
-          for($i=0; $i -lt 20; $i++) {
-              try {
-                  $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 2>&1
-                  if ($ip -and $ip -match '^\d+\.\d+\.\d+\.\d+$') {
-                      "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
-                      Write-Host "`r✅ Địa chỉ IP: $ip" -ForegroundColor Green
-                      break
-                  }
-              } catch {}
-              Write-Host "`r🔄 Đang lấy địa chỉ IP... $(@('.', '..', '...')[$i % 3])" -NoNewline -ForegroundColor Blue
+          for ($i = 0; $i -lt 20; $i++) {
+              $out = (& $ts ip -4 2>&1 | Out-String).Trim()
+              if ($out -match '^\d+\.\d+\.\d+\.\d+$') { $ip = $out; break }
               Start-Sleep -Seconds 3
           }
 
-          if (-not $ip -or $ip -notmatch '^\d+\.\d+\.\d+\.\d+$') {
-              Write-Host "`r⚠️  Không thể lấy IP, sử dụng localhost" -ForegroundColor Yellow
-              "TAILSCALE_IP=localhost" >> $env:GITHUB_ENV
+          if (-not $ip) {
+              Write-Host "❌ Không lấy được IP Tailscale" -ForegroundColor Red
+              exit 1
           }
 
-      - name: 💾 Lưu trạng thái phiên vào ổ chung
+          "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
+          Write-Host "✅ Địa chỉ IP: $ip" -ForegroundColor Green
+          exit 0
+
+      # ───────────────────────────────────────────────
+      # 7. LƯU STATE ĐẦU PHIÊN
+      # ───────────────────────────────────────────────
+      - name: 💾 Lưu trạng thái phiên vào ổ chung & GitHub
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $password = if (Test-Path $env:TEMP\rdp_password.txt) { Get-Content $env:TEMP\rdp_password.txt -Raw -ErrorAction SilentlyContinue } else { $env:RESTORE_PASS }
-          $durationInput = '${{ github.event.inputs.duration }}'
-          $durationMinutes = 340
-          switch ($durationInput) {
-              '5m' { $durationMinutes = 5 }
-              '3h' { $durationMinutes = 180 }
-              '5h40m' { $durationMinutes = 340 }
-              default { $durationMinutes = 340 }
+          # Nếu mật khẩu lấy từ secret thì KHÔNG lưu vào repo
+          $savePass = if ($env:RDP_PASS_SOURCE -eq 'secret') { $null } else { $env:RDP_PASS }
+
+          $state = [ordered]@{
+              user            = 'AISTV-PREMIUM'
+              password        = $savePass
+              passwordSource  = $env:RDP_PASS_SOURCE
+              tailscaleIp     = $env:TAILSCALE_IP
+              durationMinutes = [int]$env:TOTAL_MINUTES
+              startUtc        = (Get-Date).ToUniversalTime().ToString('o')
+              runId           = $env:GITHUB_RUN_ID
+              lastUpdatedUtc  = (Get-Date).ToUniversalTime().ToString('o')
           }
+          $state | ConvertTo-Json -Depth 5 -Compress | Set-Content -Path $env:SHARED_STATE_FILE -Encoding UTF8
 
-          $sessionState = [ordered]@{
-              user = 'AISTV-PREMIUM'
-              password = $password
-              tailscaleIp = $env:TAILSCALE_IP
-              durationMinutes = $durationMinutes
-              startUtc = (Get-Date).ToUniversalTime().ToString('o')
-              runId = $env:GITHUB_RUN_ID
-              lastUpdatedUtc = (Get-Date).ToUniversalTime().ToString('o')
-          }
+          # Đảm bảo thư mục dữ liệu rỗng vẫn được git lưu
+          $keep = Join-Path $env:SHARED_DATA_DIR '.gitkeep'
+          if (-not (Test-Path $keep)) { New-Item -ItemType File -Path $keep -Force | Out-Null }
 
-          $sessionState | ConvertTo-Json -Depth 5 -Compress | Set-Content -Path $env:SHARED_STATE_FILE -Encoding UTF8
-          if (Test-Path $env:TEMP\rdp_password.txt) {
-              Copy-Item $env:TEMP\rdp_password.txt $env:SHARED_PASSWORD_FILE -Force
-          }
+          & (Join-Path $env:RUNNER_TEMP 'save-data.ps1') -Reason 'session-start'
+          exit 0
 
-          $repoUrl = "https://x-access-token:$($env:GH_TOKEN)@github.com/${{ github.repository }}.git"
-          $branch = $env:DATA_BRANCH
-          $targetDir = Join-Path $env:SHARED_SESSION_DIR $env:DATA_DIR
-          $repoTemp = Join-Path $env:RUNNER_TEMP 'rdp-data-repo'
-          if (-not (Test-Path $targetDir)) { New-Item -ItemType Directory -Force -Path $targetDir | Out-Null }
-
-          if (Test-Path $repoTemp) { Remove-Item $repoTemp -Recurse -Force }
-          New-Item -ItemType Directory -Force -Path $repoTemp | Out-Null
-          Copy-Item (Join-Path $env:SHARED_SESSION_DIR '*') $repoTemp -Recurse -Force
-
-          $gitRoot = Join-Path $repoTemp 'gitrepo'
-          New-Item -ItemType Directory -Force -Path $gitRoot | Out-Null
-          Copy-Item (Join-Path $env:SHARED_SESSION_DIR '*') $gitRoot -Recurse -Force
-
-          git -C $gitRoot init -q
-          git -C $gitRoot checkout -q -b $branch
-          git -C $gitRoot config core.autocrlf false
-          git -C $gitRoot config user.name 'rdp-data'
-          git -C $gitRoot config user.email 'rdp-data@users.noreply.github.com'
-          git -C $gitRoot add -A
-          git -C $gitRoot commit -q -m "save $((Get-Date).ToUniversalTime().ToString('s'))Z" 2>$null
-          git -C $gitRoot remote add origin $repoUrl
-
-          $ok = $false
-          for ($try = 1; $try -le 3; $try++) {
-              git -C $gitRoot push -q --force origin $branch 2>&1 | Out-Null
-              if ($LASTEXITCODE -eq 0) { $ok = $true; break }
-              Start-Sleep -Seconds 3
-          }
-
-          if ($ok) {
-              Write-Host "✅ Đã đồng bộ dữ liệu lên nhánh $branch" -ForegroundColor Green
-          } else {
-              Write-Host "⚠️ Đồng bộ dữ liệu lên nhánh $branch thất bại, nhưng dữ liệu đã được lưu cục bộ trên ổ chung" -ForegroundColor Yellow
-          }
-
-          Write-Host "✅ Đã lưu trạng thái phiên vào $env:SHARED_ROOT" -ForegroundColor Green
-
-      # HIỂN THỊ GIAO DIỆN ĐẸP
+      # ───────────────────────────────────────────────
+      # 8. THÔNG TIN KẾT NỐI
+      # ───────────────────────────────────────────────
       - name: 🎉 THÔNG TIN KẾT NỐI
         shell: pwsh
         run: |
-          $matKhau = Get-Content $env:TEMP\rdp_password.txt -ErrorAction SilentlyContinue
-          if (-not $matKhau) {
-              $matKhau = 'Không thể đọc mật khẩu'
-          }
+          $tz    = [System.TimeZoneInfo]::FindSystemTimeZoneById('SE Asia Standard Time')
+          $start = [System.TimeZoneInfo]::ConvertTimeFromUtc([DateTimeOffset]::FromUnixTimeSeconds([long]$env:JOB_START_EPOCH).UtcDateTime, $tz)
+          $end   = $start.AddMinutes([int]$env:TOTAL_MINUTES)
 
-          $durationInput = '${{ github.event.inputs.duration }}'
-          switch ($durationInput) {
-              '1h' { $totalMinutes = 60; $displayTime = '1 giờ' }
-              '3h' { $totalMinutes = 180; $displayTime = '3 giờ' }
-              '5h40m' { $totalMinutes = 340; $displayTime = '5 giờ 40 phút' }
-              default { $totalMinutes = 340; $displayTime = '5 giờ 40 phút' }
-          }
-
-          $timeZone = [System.TimeZoneInfo]::FindSystemTimeZoneById('SE Asia Standard Time')
-          $thoiGianBatDau = [System.TimeZoneInfo]::ConvertTimeFromUtc((Get-Date).ToUniversalTime(), $timeZone)
-          $thoiGianKetThuc = $thoiGianBatDau.AddMinutes($totalMinutes)
+          $passText = if ($env:RDP_PASS_SOURCE -eq 'secret') { '(dùng secret RDP_PASSWORD)' } else { $env:RDP_PASS }
 
           Write-Host ""
           Write-Host "┌───────────────────────────────────────────┐" -ForegroundColor Cyan
-          Write-Host "│              🎉 KẾT NỐI THÀNH CÔNG!              │" -ForegroundColor Cyan
+          Write-Host "│              🎉 KẾT NỐI THÀNH CÔNG!" -ForegroundColor Cyan
           Write-Host "├───────────────────────────────────────────┤" -ForegroundColor Cyan
           Write-Host "│ 🌐  Địa chỉ: $env:TAILSCALE_IP" -ForegroundColor White
-          Write-Host "│ 🗂️  Shared: $env:SHARED_ROOT" -ForegroundColor White
-          Write-Host "│ 👤  Tài khoản: AISTV-PREMIUM" -ForegroundColor White
-          Write-Host "│ 🔐  Mật khẩu: $matKhau" -ForegroundColor White
-          Write-Host "│ ⏰  Thời lượng: $displayTime" -ForegroundColor White
-          Write-Host "│ 🕐  Bắt đầu: $($thoiGianBatDau.ToString('HH:mm:ss'))" -ForegroundColor White
-          Write-Host "│ 🕐  Kết thúc: $($thoiGianKetThuc.ToString('HH:mm:ss'))" -ForegroundColor White
           Write-Host "│ 📍  Port: 3389" -ForegroundColor White
+          Write-Host "│ 👤  Tài khoản: AISTV-PREMIUM" -ForegroundColor White
+          Write-Host "│ 🔐  Mật khẩu: $passText" -ForegroundColor White
+          Write-Host "│ 🗂️  Thư mục lưu dữ liệu: $env:SHARED_DATA_DIR" -ForegroundColor White
+          Write-Host "│     (hoặc shortcut AISTV-SHARED trên Desktop)" -ForegroundColor White
+          Write-Host "│ ⏰  Thời lượng: $env:DISPLAY_TIME" -ForegroundColor White
+          Write-Host "│ 🕐  Bắt đầu: $($start.ToString('HH:mm:ss'))" -ForegroundColor White
+          Write-Host "│ 🕐  Kết thúc: $($end.ToString('HH:mm:ss'))" -ForegroundColor White
           Write-Host "├───────────────────────────────────────────┤" -ForegroundColor Cyan
-          Write-Host "│ 💡  Hướng dẫn:                                    │" -ForegroundColor Cyan
-          Write-Host "│   1. Mở Remote Desktop Connection                 │" -ForegroundColor Yellow
-          Write-Host "│   2. Nhập: $env:TAILSCALE_IP                      │" -ForegroundColor Yellow
-          Write-Host "│   3. User: AISTV-PREMIUM | Password: trên          │" -ForegroundColor Yellow
-          Write-Host "│   4. Enjoy! 🚀                                    │" -ForegroundColor Yellow
+          Write-Host "│ 💡  Chỉ file nằm trong thư mục shared-rdp mới được lưu sang phiên sau" -ForegroundColor Yellow
+          Write-Host "│ 💡  Tự lưu mỗi 15 phút và lưu lần cuối khi hết giờ" -ForegroundColor Yellow
           Write-Host "└───────────────────────────────────────────┘" -ForegroundColor Cyan
+          exit 0
 
-          "TOTAL_MINUTES=$totalMinutes" >> $env:GITHUB_ENV
-
-      # DUY TRÌ PHIÊN ỔN ĐỊNH
+      # ───────────────────────────────────────────────
+      # 9. DUY TRÌ PHIÊN + AUTOSAVE
+      # ───────────────────────────────────────────────
       - name: ⏳ DUY TRÌ PHIÊN LÀM VIỆC
+        id: keepalive
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTOSAVE_MINUTES: '15'
         run: |
-          $totalMinutes = $env:TOTAL_MINUTES
-
-          $timeZone = [System.TimeZoneInfo]::FindSystemTimeZoneById('SE Asia Standard Time')
-          $thoiGianBatDau = [System.TimeZoneInfo]::ConvertTimeFromUtc((Get-Date).ToUniversalTime(), $timeZone)
-          $thoiGianKetThuc = $thoiGianBatDau.AddMinutes($totalMinutes)
+          $tz         = [System.TimeZoneInfo]::FindSystemTimeZoneById('SE Asia Standard Time')
+          $endEpoch   = [long]$env:JOB_START_EPOCH + ([long]$env:TOTAL_MINUTES * 60)
+          $saveScript = Join-Path $env:RUNNER_TEMP 'save-data.ps1'
+          $endLocal   = [System.TimeZoneInfo]::ConvertTimeFromUtc([DateTimeOffset]::FromUnixTimeSeconds($endEpoch).UtcDateTime, $tz)
 
           Write-Host ""
           Write-Host "🔄 BẮT ĐẦU DUY TRÌ PHIÊN LÀM VIỆC..." -ForegroundColor Yellow
-          Write-Host "💎 Phiên: AI STV PREMIUM" -ForegroundColor Magenta
           Write-Host "🔗 Kết nối: $env:TAILSCALE_IP" -ForegroundColor Cyan
-          Write-Host "🗂️ Shared: $env:SHARED_ROOT" -ForegroundColor Cyan
-          Write-Host "🕐 Bắt đầu: $($thoiGianBatDau.ToString('HH:mm:ss'))" -ForegroundColor Green
-          Write-Host "🕐 Kết thúc: $($thoiGianKetThuc.ToString('HH:mm:ss'))" -ForegroundColor Green
+          Write-Host "🗂️ Dữ liệu: $env:SHARED_DATA_DIR" -ForegroundColor Cyan
+          Write-Host "🕐 Kết thúc dự kiến: $($endLocal.ToString('HH:mm:ss'))" -ForegroundColor Green
           Write-Host ""
 
-          $monitorScript = {
-              $lastLogTime = Get-Date
-              while ($true) {
-                  $currentTime = Get-Date
+          $lastSave = Get-Date
+          $lastLog  = (Get-Date).AddHours(-1)
+          $warned   = $false
 
-                  if (($currentTime - $lastLogTime).TotalMinutes -ge 2) {
-                      $termService = Get-Service -Name TermService -ErrorAction SilentlyContinue
-                      $rdpConnections = Get-NetTCPConnection -LocalPort 3389 -ErrorAction SilentlyContinue | Where-Object { $_.State -eq 'Established' }
+          while ($true) {
+              $now    = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+              $remain = $endEpoch - $now
+              if ($remain -le 0) { break }
 
-                      Write-Host "[$($currentTime.ToString('HH:mm:ss'))] 📊 Trạng thái - RDP: $($termService.Status), Kết nối: $($rdpConnections.Count)" -ForegroundColor Blue
-                      $lastLogTime = $currentTime
-                  }
-
-                  $termService = Get-Service -Name TermService -ErrorAction SilentlyContinue
-                  if ($termService.Status -ne 'Running') {
-                      Write-Host "[$($currentTime.ToString('HH:mm:ss'))] 🔄 Khởi động lại TermService..." -ForegroundColor Yellow
-                      Start-Service -Name TermService -ErrorAction SilentlyContinue
-                  }
-
-                  Start-Sleep -Seconds 30
+              # Log trạng thái mỗi 5 phút
+              if (((Get-Date) - $lastLog).TotalMinutes -ge 5) {
+                  $svc  = Get-Service -Name TermService -ErrorAction SilentlyContinue
+                  $conn = @(Get-NetTCPConnection -LocalPort 3389 -State Established -ErrorAction SilentlyContinue).Count
+                  $h = [math]::Floor($remain / 3600); $m = [math]::Floor(($remain % 3600) / 60)
+                  Write-Host "[$(Get-Date -Format 'HH:mm:ss')] 📊 RDP: $($svc.Status) | Kết nối: $conn | Còn lại: ${h}h ${m}m" -ForegroundColor Blue
+                  $lastLog = Get-Date
               }
+
+              # Tự bật lại TermService nếu bị tắt
+              $svc = Get-Service -Name TermService -ErrorAction SilentlyContinue
+              if ($svc -and $svc.Status -ne 'Running') {
+                  Write-Host "🔄 Khởi động lại TermService..." -ForegroundColor Yellow
+                  Start-Service -Name TermService -ErrorAction SilentlyContinue
+              }
+
+              # Cảnh báo người dùng trước khi hết giờ 5 phút
+              if (-not $warned -and $remain -le 300) {
+                  try { msg * /TIME:290 "Phien RDP sap het gio (5 phut). Hay luu file vao thu muc shared-rdp!" } catch {}
+                  $warned = $true
+              }
+
+              # Autosave mỗi N phút (không chạy khi sắp hết giờ vì sẽ có lưu cuối)
+              if ((((Get-Date) - $lastSave).TotalMinutes -ge [int]$env:AUTOSAVE_MINUTES) -and $remain -gt 180) {
+                  & $saveScript -Reason 'autosave'
+                  $global:LASTEXITCODE = 0
+                  $lastSave = Get-Date
+              }
+
+              Start-Sleep -Seconds ([int][math]::Min(30, [math]::Max(1, $remain)))
           }
-
-          Start-Job -ScriptBlock $monitorScript -Name 'SystemMonitor'
-
-          $frames = @('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
-          $colors = @('Red', 'Yellow', 'Green', 'Cyan', 'Blue', 'Magenta')
-          $startTime = Get-Date
-
-          do {
-              $thoiGianHienTai = [System.TimeZoneInfo]::ConvertTimeFromUtc((Get-Date).ToUniversalTime(), $timeZone)
-              $thoiGianConLai = $thoiGianKetThuc - $thoiGianHienTai
-
-              $gioConLai = [math]::Max(0, [math]::Floor($thoiGianConLai.TotalHours))
-              $phutConLai = [math]::Max(0, [math]::Floor($thoiGianConLai.TotalMinutes % 60))
-              $giayConLai = [math]::Max(0, [math]::Floor($thoiGianConLai.TotalSeconds % 60))
-
-              $frame = $frames[([int]((Get-Date) - $startTime).TotalSeconds) % $frames.Length]
-              $color = $colors[([int]((Get-Date) - $startTime).TotalMinutes) % $colors.Length]
-
-              Write-Host "`r$frame [$($thoiGianHienTai.ToString('HH:mm:ss'))] Thời gian còn lại: $gioConLai giờ $phutConLai phút $giayConLai giây" -NoNewline -ForegroundColor $color
-
-              Start-Sleep -Seconds 5
-          } while ($thoiGianConLai.TotalSeconds -gt 0)
 
           Write-Host ""
           Write-Host "🎯 ĐÃ HẾT THỜI GIAN - TỰ ĐỘNG DỪNG!" -ForegroundColor Red
+          exit 0
 
-          Get-Job -Name 'SystemMonitor' -ErrorAction SilentlyContinue | Stop-Job -PassThru | Remove-Job -Force
+      # ───────────────────────────────────────────────
+      # 10. LƯU CUỐI PHIÊN (luôn chạy, trước khi dọn dẹp)
+      # ───────────────────────────────────────────────
+      - name: 💾 Lưu dữ liệu cuối phiên
+        if: always()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $saveScript = Join-Path $env:RUNNER_TEMP 'save-data.ps1'
+          if (Test-Path $saveScript) {
+              & $saveScript -Reason 'session-end'
+          } else {
+              Write-Host 'ℹ️ Không có script lưu, bỏ qua' -ForegroundColor Cyan
+          }
+          exit 0
 
-      # DỌN DẸP CHUYÊN NGHIỆP
+      # ───────────────────────────────────────────────
+      # 11. DỌN DẸP
+      # ───────────────────────────────────────────────
       - name: 🧹 DỌN DẸP HỆ THỐNG
         if: always()
         shell: pwsh
@@ -555,24 +572,20 @@ jobs:
           Write-Host ""
           Write-Host "🧹 ĐANG DỌN DẸP HỆ THỐNG..." -ForegroundColor Yellow
 
-          # Giữ lại state/password trên ổ chung để các phiên sau có thể tiếp tục dùng
-          if (Test-Path $env:TEMP\rdp_password.txt) {
-              Copy-Item $env:TEMP\rdp_password.txt $env:SHARED_PASSWORD_FILE -Force
-          }
+          $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
           $cleanupSteps = @(
               @{Name='Vô hiệu hóa user'; Script={
                   Disable-LocalUser -Name 'AISTV-PREMIUM' -ErrorAction SilentlyContinue
               }},
               @{Name='Đóng kết nối mạng'; Script={
-                  & "$env:ProgramFiles\Tailscale\tailscale.exe" down --accept-risk=all -ErrorAction SilentlyContinue
-                  Start-Sleep -Seconds 5
+                  if (Test-Path $ts) {
+                      & $ts logout 2>&1 | Out-Null
+                      & $ts down 2>&1 | Out-Null
+                  }
               }},
               @{Name='Xóa rule firewall'; Script={
-                  netsh advfirewall firewall delete rule name='RDP-Premium' dir=in -ErrorAction SilentlyContinue
-                  netsh advfirewall firewall delete rule name='RDP-Premium-Out' dir=out -ErrorAction SilentlyContinue
                   Remove-NetFirewallRule -DisplayName 'RDP-Premium' -ErrorAction SilentlyContinue
-                  Remove-NetFirewallRule -DisplayName 'RDP-Premium-Out' -ErrorAction SilentlyContinue
               }},
               @{Name='Khôi phục cài đặt RDP'; Script={
                   Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 1 -Force -ErrorAction SilentlyContinue
@@ -580,31 +593,33 @@ jobs:
               }}
           )
 
-          foreach($step in $cleanupSteps) {
-              Write-Host "│ 🗑️  $($step.Name)..." -NoNewline -ForegroundColor Gray
+          foreach ($step in $cleanupSteps) {
               try {
                   & $step.Script
-                  Write-Host "`r│ ✅ $($step.Name)" -ForegroundColor Green
+                  Write-Host "│ ✅ $($step.Name)" -ForegroundColor Green
               } catch {
-                  Write-Host "`r│ ⚠️  $($step.Name) - Đã xử lý an toàn" -ForegroundColor Yellow
+                  Write-Host "│ ⚠️  $($step.Name) - đã xử lý an toàn" -ForegroundColor Yellow
               }
-              Start-Sleep -Milliseconds 300
           }
 
-          Get-Job | Stop-Job -PassThru | Remove-Job -Force -ErrorAction SilentlyContinue
-
-          Write-Host ""
           Write-Host "🎉 Dọn dẹp hoàn tất! Hẹn gặp lại! 👋" -ForegroundColor Green
+          exit 0
 
+      # ───────────────────────────────────────────────
+      # 12. PHIÊN TIẾP THEO
+      # Chỉ chạy lại khi phiên trước chạy trọn vẹn đến hết giờ,
+      # tránh vòng lặp vô hạn nếu setup bị lỗi (thiếu secret, Tailscale lỗi...).
+      # ───────────────────────────────────────────────
       - name: 🔁 Kích hoạt phiên tiếp theo
-        if: ${{ always() && inputs.auto_restart && !cancelled() }}
+        if: ${{ always() && inputs.auto_restart && steps.keepalive.outcome == 'success' }}
         shell: pwsh
         env:
+          GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           DURATION: ${{ inputs.duration }}
         run: |
           $wf = [System.IO.Path]::GetFileName(($env:GITHUB_WORKFLOW_REF -split '@')[0])
           Write-Host "Chạy lại workflow: $wf (ref: $env:GITHUB_REF_NAME)" -ForegroundColor Cyan
-          gh workflow run $wf --ref $env:GITHUB_REF_NAME -f duration=$env:DURATION -f auto_restart=true -f shared_root="$env:SHARED_ROOT"
+          gh workflow run $wf --ref $env:GITHUB_REF_NAME -f "duration=$($env:DURATION)" -f auto_restart=true -f "shared_root=$($env:SHARED_ROOT)"
           if ($LASTEXITCODE -ne 0) { throw 'Không kích hoạt được phiên mới' }
           Write-Host "✅ Đã kích hoạt phiên tiếp theo" -ForegroundColor Green
