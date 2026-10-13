@@ -1,4 +1,4 @@
-name: siêu bá ki của đạt lor kim
+name: siêu bá ki của đạt lor kim (restic)
 
 on:
   workflow_dispatch:
@@ -71,7 +71,11 @@ jobs:
     timeout-minutes: 355
 
     env:
-      DATA_BRANCH: rdp-data
+      # Kho restic (S3-compatible: Backblaze B2, Cloudflare R2, AWS S3, MinIO...)
+      RESTIC_REPOSITORY: ${{ secrets.RESTIC_REPOSITORY }}
+      RESTIC_PASSWORD: ${{ secrets.RESTIC_PASSWORD }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       DATA_DIR: shared-rdp
 
     steps:
@@ -126,7 +130,7 @@ jobs:
           $sessionDir  = Join-Path $selected 'sessions'
           $dataDir     = Join-Path $sessionDir $env:DATA_DIR
           $profileRoot = Join-Path $selected 'Users'          # nơi chứa profile THẬT của user (trên ổ D)
-          $profileBk   = Join-Path $sessionDir 'profile-data' # bản sao lọc sạch để đồng bộ lên GitHub
+          $profileBk   = 'C:\aistv-profile-old'                # nơi tạm giữ profile cũ lúc khôi phục (ngoài ổ D, không bị backup lại)
           New-Item -ItemType Directory -Force -Path $dataDir     | Out-Null
           New-Item -ItemType Directory -Force -Path $profileRoot | Out-Null
 
@@ -144,7 +148,7 @@ jobs:
           Write-Host "✅ User riêng: $user  |  Profile: $profileRoot\$user" -ForegroundColor Green
           Write-Host "✅ Windows build: $build ($($env:RUNNER_OS))" -ForegroundColor Green
 
-      - name: 🧰 Tạo script lưu dữ liệu (dùng lại nhiều lần)
+      - name: 🧰 Tạo script lưu dữ liệu (restic + VSS, dùng lại nhiều lần)
         shell: pwsh
         run: |
           $script = @'
@@ -152,67 +156,26 @@ jobs:
           $ErrorActionPreference = 'Continue'
 
           if ($env:DATA_RESTORED -ne '1') {
-              Write-Host '⚠️ Dữ liệu chưa được khôi phục xong, bỏ qua lưu để tránh ghi đè dữ liệu cũ' -ForegroundColor Yellow
+              Write-Host '⚠️ Dữ liệu chưa khôi phục xong, bỏ qua lưu để tránh ghi đè' -ForegroundColor Yellow
               exit 0
           }
-          $sessionDir = $env:SHARED_SESSION_DIR
-          if (-not $sessionDir -or -not (Test-Path $sessionDir)) {
-              Write-Host 'ℹ️ Chưa có thư mục dữ liệu, bỏ qua'; exit 0
-          }
-          if (-not $env:GH_TOKEN) { Write-Host '⚠️ Thiếu GH_TOKEN'; exit 1 }
-
-          # ── Đồng bộ profile của user riêng (ổ D) -> profile-data (đã lọc cache/file hệ thống)
-          try {
-              $user    = $env:RDP_USER
-              $profDir = Join-Path $env:PROFILE_ROOT $user
-              $bk      = $env:PROFILE_BACKUP
-              if ($user -and (Test-Path (Join-Path $profDir 'Desktop'))) {
-                  New-Item -ItemType Directory -Force -Path $bk | Out-Null
-                  $L = Join-Path $profDir 'AppData\Local'
-                  $R = Join-Path $profDir 'AppData\Roaming'
-                  $xd = @(
-                      "$L\Microsoft", "$L\Packages", "$L\Temp",
-                      "$R\Microsoft\Windows", "$R\Microsoft\Protect", "$R\Microsoft\Crypto", "$R\Microsoft\SystemCertificates",
-                      'Cache', 'Code Cache', 'GPUCache', 'INetCache', 'Crashpad', 'CrashDumps',
-                      'Application Data', 'Local Settings', 'Cookies', 'NetHood', 'PrintHood',
-                      'Recent', 'SendTo', 'Start Menu', 'Templates', 'My Documents',
-                      (Join-Path $bk 'registry')
-                  )
-                  robocopy $profDir $bk /MIR /XJ /XD $xd /XF 'NTUSER.DAT*' 'ntuser.*' 'UsrClass.dat*' '*.tmp' /MAX:52428800 /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
-                  $global:LASTEXITCODE = 0
-
-                  # Registry HKCU\Software (chỉ xuất được khi user đang đăng nhập = hive đang load)
-                  $sid = (Get-LocalUser -Name $user -ErrorAction SilentlyContinue).SID.Value
-                  if ($sid -and (Test-Path "Registry::HKEY_USERS\$sid\Software")) {
-                      $regDir = Join-Path $bk 'registry'
-                      New-Item -ItemType Directory -Force -Path $regDir | Out-Null
-                      Remove-Item (Join-Path $regDir '*.reg') -Force -ErrorAction SilentlyContinue
-                      $i = 0
-                      Get-ChildItem -LiteralPath "Registry::HKEY_USERS\$sid\Software" -ErrorAction SilentlyContinue |
-                          Where-Object { $_.PSChildName -notin @('Microsoft', 'Classes', 'Policies') } |
-                          ForEach-Object {
-                              $i++
-                              reg export "HKU\$sid\Software\$($_.PSChildName)" (Join-Path $regDir "sw-$i.reg") /y 2>&1 | Out-Null
-                          }
-                      $global:LASTEXITCODE = 0
-                  }
-              }
-          } catch {
-              Write-Host "⚠️ Lỗi đồng bộ profile: $($_.Exception.Message)" -ForegroundColor Yellow
+          $root = $env:SHARED_ROOT
+          if (-not $root -or -not (Test-Path $root)) { Write-Host 'ℹ️ Chưa có thư mục dữ liệu, bỏ qua'; exit 0 }
+          $restic = $env:RESTIC_EXE
+          if (-not $restic -or -not (Test-Path $restic) -or -not $env:RESTIC_REPOSITORY) {
+              Write-Host '⚠️ Thiếu restic hoặc RESTIC_REPOSITORY'; exit 1
           }
 
-          # ── Đồng bộ cấu hình RustDesk (service) để giữ ID cố định
+          # Đồng bộ cấu hình RustDesk (service) vào ổ chung để được backup cùng
           try {
               $rdCfg = 'C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config'
               if (Test-Path (Join-Path $rdCfg 'RustDesk.toml')) {
-                  $rdBk = Join-Path $sessionDir 'rustdesk-config'
+                  $rdBk = Join-Path $env:SHARED_SESSION_DIR 'rustdesk-config'
                   New-Item -ItemType Directory -Force -Path $rdBk | Out-Null
-                  robocopy $rdCfg $rdBk /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+                  robocopy $rdCfg $rdBk /MIR /B /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
                   $global:LASTEXITCODE = 0
               }
-          } catch {
-              Write-Host "⚠️ Lỗi đồng bộ cấu hình RustDesk: $($_.Exception.Message)" -ForegroundColor Yellow
-          }
+          } catch { Write-Host "⚠️ Lỗi đồng bộ RustDesk: $($_.Exception.Message)" -ForegroundColor Yellow }
 
           # Cập nhật mốc thời gian trong state
           $stateFile = $env:SHARED_STATE_FILE
@@ -224,110 +187,149 @@ jobs:
               } catch {}
           }
 
-          $work = Join-Path $env:RUNNER_TEMP 'data-push'
-          if (Test-Path $work) { Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue }
-          New-Item -ItemType Directory -Force -Path $work | Out-Null
+          # Backup TOÀN BỘ ổ chung (không loại trừ gì). VSS đọc cả file đang bị khóa
+          # (NTUSER.DAT, LevelDB/SQLite của Discord/Chrome...). Nếu VSS lỗi thì thử lại không VSS.
+          $tag = ($Reason -replace '[^A-Za-z0-9_-]', '-')
+          $base = @('backup', $root, '--host', 'aistv', '--tag', $tag, '--quiet')
 
-          robocopy $sessionDir $work /E /XD .git /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
-          $global:LASTEXITCODE = 0
-
-          # Git giới hạn 100MB/file
-          Get-ChildItem $work -Recurse -File -Force -ErrorAction SilentlyContinue |
-              Where-Object { $_.Length -gt 95MB } |
-              ForEach-Object {
-                  Write-Host "⚠️ Bỏ qua file >95MB: $($_.FullName.Substring($work.Length))" -ForegroundColor Yellow
-                  Remove-Item $_.FullName -Force
-              }
-
-          $repoUrl = "https://x-access-token:$($env:GH_TOKEN)@github.com/$($env:GITHUB_REPOSITORY).git"
-          $branch  = $env:DATA_BRANCH
-          $ok = $false
-          try {
-              git -C $work init -q 2>&1 | Out-Null
-              git -C $work checkout -q -b $branch 2>&1 | Out-Null
-              git -C $work config core.autocrlf false
-              git -C $work config user.name 'rdp-data'
-              git -C $work config user.email 'rdp-data@users.noreply.github.com'
-              git -C $work add -A 2>&1 | Out-Null
-              git -C $work commit -q -m "$Reason $((Get-Date).ToUniversalTime().ToString('s'))Z" 2>&1 | Out-Null
-              git -C $work remote add origin $repoUrl
-
-              for ($try = 1; $try -le 3; $try++) {
-                  git -C $work push -q --force origin $branch 2>&1 | Out-Null
-                  if ($LASTEXITCODE -eq 0) { $ok = $true; break }
-                  Start-Sleep -Seconds 5
-              }
-          } finally {
-              # Xóa thư mục tạm (chứa token trong git config)
-              Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
+          & $restic @base '--use-fs-snapshot' '-o' 'vss.timeout=3m'
+          $code = $LASTEXITCODE
+          if ($code -ne 0 -and $code -ne 3) {
+              Write-Host "⚠️ Backup có VSS lỗi (mã $code), thử lại không VSS..." -ForegroundColor Yellow
+              & $restic @base
+              $code = $LASTEXITCODE
           }
 
-          if ($ok) {
-              Write-Host "✅ [$Reason] Đã đồng bộ dữ liệu lên nhánh $branch" -ForegroundColor Green
+          # mã 0 = ok, mã 3 = ok nhưng vài file không đọc được (cảnh báo)
+          if ($code -eq 0) {
+              Write-Host "✅ [$Reason] Đã backup toàn bộ lên restic" -ForegroundColor Green
+              exit 0
+          } elseif ($code -eq 3) {
+              Write-Host "✅ [$Reason] Đã backup (một số file không đọc được, xem cảnh báo phía trên)" -ForegroundColor Yellow
               exit 0
           } else {
-              Write-Host "⚠️ [$Reason] Đồng bộ lên nhánh $branch thất bại (dữ liệu vẫn còn trên ổ chung)" -ForegroundColor Yellow
+              Write-Host "❌ [$Reason] Backup thất bại (mã $code). Dữ liệu vẫn còn trên ổ chung." -ForegroundColor Red
               exit 1
           }
           '@
           Set-Content -Path (Join-Path $env:RUNNER_TEMP 'save-data.ps1') -Value $script -Encoding UTF8
           Write-Host '✅ Đã tạo save-data.ps1' -ForegroundColor Green
 
-      # ───────────────────────────────────────────────
-      # 2. KHÔI PHỤC DỮ LIỆU TỪ NHÁNH GITHUB
-      # ───────────────────────────────────────────────
-      - name: ♻️ Khôi phục dữ liệu từ nhánh GitHub
+      - name: 📥 Cài restic
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $repoUrl = "https://x-access-token:$($env:GH_TOKEN)@github.com/${{ github.repository }}.git"
-          $branch  = $env:DATA_BRANCH
-          $tmp     = Join-Path $env:RUNNER_TEMP 'rdp-data-repo'
-          if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
+          foreach ($n in 'RESTIC_REPOSITORY','RESTIC_PASSWORD','AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY') {
+              if (-not (Get-Item "env:$n" -ErrorAction SilentlyContinue).Value) {
+                  Write-Host "❌ Thiếu secret $n" -ForegroundColor Red
+                  exit 1
+              }
+          }
+          $dir = Join-Path $env:RUNNER_TEMP 'restic'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $ver = '0.18.0'   # dự phòng
+          try {
+              $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/restic/restic/releases/latest' `
+                  -Headers @{ 'User-Agent' = 'aistv-rdp'; 'Authorization' = "Bearer $($env:GH_TOKEN)" } -TimeoutSec 30
+              $ver = $rel.tag_name.TrimStart('v')
+          } catch { Write-Host "⚠️ Không hỏi được bản mới nhất, dùng $ver" -ForegroundColor Yellow }
 
-          git ls-remote --exit-code --heads $repoUrl $branch 2>&1 | Out-Null
+          $zip = Join-Path $dir 'restic.zip'
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri "https://github.com/restic/restic/releases/download/v$ver/restic_${ver}_windows_amd64.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          $exe = Get-ChildItem $dir -Filter 'restic_*.exe' | Select-Object -First 1
+          if (-not $exe) { Write-Host '❌ Không giải nén được restic' -ForegroundColor Red; exit 1 }
+          Copy-Item $exe.FullName (Join-Path $dir 'restic.exe') -Force
+          "RESTIC_EXE=$(Join-Path $dir 'restic.exe')" >> $env:GITHUB_ENV
+          & (Join-Path $dir 'restic.exe') version
+          exit 0
+
+      # ───────────────────────────────────────────────
+      # 2. KHÔI PHỤC DỮ LIỆU TỪ RESTIC
+      # ───────────────────────────────────────────────
+      - name: ♻️ Khôi phục dữ liệu từ restic
+        shell: pwsh
+        run: |
+          $restic = $env:RESTIC_EXE
+          $stage  = 'C:\aistv-stage'
+
+          & $restic cat config *> $null
           $code = $LASTEXITCODE
-
-          if ($code -eq 2) {
-              Write-Host "ℹ️ Chưa có nhánh $branch - đây là phiên đầu tiên" -ForegroundColor Cyan
-              "DATA_RESTORED=1" >> $env:GITHUB_ENV
+          if ($code -eq 10) {
+              Write-Host 'ℹ️ Kho restic chưa tồn tại - đây là phiên đầu tiên, tạo kho mới' -ForegroundColor Cyan
+              & $restic init
+              if ($LASTEXITCODE -ne 0) { Write-Host '❌ Không tạo được kho restic' -ForegroundColor Red; exit 1 }
+              'DATA_RESTORED=1' >> $env:GITHUB_ENV
               exit 0
           }
           if ($code -ne 0) {
-              # Dừng hẳn để không ghi đè dữ liệu cũ bằng dữ liệu rỗng
-              Write-Host "❌ Không kết nối được GitHub để kiểm tra nhánh $branch" -ForegroundColor Red
+              # Dừng hẳn (sai mật khẩu / lỗi mạng / sai key) để không backup đè dữ liệu rỗng
+              Write-Host "❌ Không mở được kho restic (mã $code). Kiểm tra RESTIC_REPOSITORY / RESTIC_PASSWORD / key" -ForegroundColor Red
               exit 1
           }
 
-          git -c core.autocrlf=false clone --branch $branch --single-branch --depth 1 $repoUrl $tmp 2>&1 | Out-Null
-          if ($LASTEXITCODE -ne 0) {
-              Write-Host "❌ Clone nhánh $branch thất bại" -ForegroundColor Red
-              exit 1
+          $snaps = & $restic snapshots latest --host aistv --json | ConvertFrom-Json
+          if (-not $snaps -or @($snaps).Count -eq 0) {
+              Write-Host 'ℹ️ Kho chưa có snapshot nào - phiên đầu tiên' -ForegroundColor Cyan
+              'DATA_RESTORED=1' >> $env:GITHUB_ENV
+              exit 0
           }
 
-          robocopy $tmp $env:SHARED_SESSION_DIR /E /XD .git /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+          if (Test-Path $stage) { Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue }
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Write-Host '⬇️  Đang khôi phục snapshot mới nhất...' -ForegroundColor Cyan
+          & $restic restore latest --host aistv --target $stage --quiet
+          $rc = $LASTEXITCODE
+          if ($rc -ne 0) { Write-Host "⚠️ restore trả mã $rc (một số mục như junction có thể không khôi phục được)" -ForegroundColor Yellow }
+
+          # Tìm gốc của ổ chung trong thư mục tạm (không phụ thuộc cách restic đặt tên ổ đĩa)
+          $stateHit = Get-ChildItem $stage -Recurse -Depth 6 -Filter 'rdp-session-state.json' -File -Force -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $stateHit) {
+              Write-Host '❌ Khôi phục xong nhưng không thấy dữ liệu phiên trước. Dừng để không ghi đè.' -ForegroundColor Red
+              exit 1
+          }
+          $oldRoot = $stateHit.Directory.Parent.FullName
+
+          # Mọi thứ trừ profile -> về ổ chung
+          robocopy $oldRoot $env:SHARED_ROOT /E /B /XJ /XD (Join-Path $oldRoot 'Users') /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
           $global:LASTEXITCODE = 0
-          Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $env:SHARED_DATA_DIR | Out-Null
-          Write-Host "✅ Đã phục hồi dữ liệu từ nhánh $branch" -ForegroundColor Green
+
+          # Profile cũ -> giữ tạm ở C: để bước tạo user nạp vào profile mới (gồm cả NTUSER.DAT)
+          $oldProf = Join-Path $oldRoot "Users\$($env:RDP_USER)"
+          if (Test-Path $oldProf) {
+              if (Test-Path $env:PROFILE_BACKUP) { Remove-Item $env:PROFILE_BACKUP -Recurse -Force -ErrorAction SilentlyContinue }
+              robocopy $oldProf $env:PROFILE_BACKUP /E /B /XJ /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+              $global:LASTEXITCODE = 0
+              Write-Host '✅ Đã lấy lại profile cũ (đầy đủ, gồm registry)' -ForegroundColor Green
+          } else {
+              Write-Host "ℹ️ Không thấy profile của user $($env:RDP_USER) trong snapshot" -ForegroundColor Yellow
+          }
+          Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+          Write-Host '✅ Đã khôi phục dữ liệu từ restic' -ForegroundColor Green
 
           if (Test-Path $env:SHARED_STATE_FILE) {
               try {
                   $state = Get-Content -Raw $env:SHARED_STATE_FILE | ConvertFrom-Json
                   if ($state.password) {
                       "RESTORE_PASS=$($state.password)" >> $env:GITHUB_ENV
-                      Write-Host "✅ Đã khôi phục mật khẩu phiên trước" -ForegroundColor Green
+                      Write-Host '✅ Đã khôi phục mật khẩu phiên trước' -ForegroundColor Green
                   }
+                  if ($state.sid) { "RESTORE_SID=$($state.sid)" >> $env:GITHUB_ENV }
                   if ($state.osBuild -and "$($state.osBuild)" -ne "$($env:OS_BUILD)") {
-                      Write-Host "⚠️ Bản Windows khác phiên trước (trước: build $($state.osBuild), nay: build $($env:OS_BUILD)). App có thể lỗi - hãy chọn đúng windows_image như phiên trước." -ForegroundColor Yellow
+                      Write-Host "⚠️ Bản Windows khác phiên trước (trước: $($state.osBuild), nay: $($env:OS_BUILD)). Hãy chọn đúng windows_image." -ForegroundColor Yellow
                   }
-              } catch {
-                  Write-Host "⚠️ File state cũ không đọc được, bỏ qua" -ForegroundColor Yellow
-              }
+              } catch { Write-Host '⚠️ File state cũ không đọc được, bỏ qua' -ForegroundColor Yellow }
           }
+          'DATA_RESTORED=1' >> $env:GITHUB_ENV
 
-          "DATA_RESTORED=1" >> $env:GITHUB_ENV
+          # Dọn snapshot cũ (giữ 20 bản gần nhất). Lỗi ở đây không ảnh hưởng phiên.
+          try {
+              & $restic forget --host aistv --keep-last 20 --prune --quiet
+          } catch {}
+          $global:LASTEXITCODE = 0
           exit 0
 
       # ───────────────────────────────────────────────
@@ -540,44 +542,21 @@ jobs:
           Write-Host "│ ✅ Profile: $profPath" -ForegroundColor Green
           "PROFILE_PATH=$profPath" >> $env:GITHUB_ENV
 
-          # ── Khôi phục dữ liệu profile từ phiên trước (file + registry)
+          # ── Khôi phục TOÀN BỘ profile cũ (Desktop, AppData, NTUSER.DAT = toàn bộ registry HKCU...)
           if ((Test-Path $env:PROFILE_BACKUP) -and (Test-Path $profPath)) {
-              robocopy $env:PROFILE_BACKUP $profPath /E /XD (Join-Path $env:PROFILE_BACKUP 'registry') /XF 'NTUSER.DAT*' /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+              robocopy $env:PROFILE_BACKUP $profPath /E /B /XJ /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
               $global:LASTEXITCODE = 0
-              Write-Host "│ ✅ Đã khôi phục file profile (Desktop, Documents, AppData...)" -ForegroundColor Green
+              Write-Host "│ ✅ Đã khôi phục toàn bộ profile (file + registry NTUSER.DAT)" -ForegroundColor Green
+              Remove-Item $env:PROFILE_BACKUP -Recurse -Force -ErrorAction SilentlyContinue
 
-              $regDir = Join-Path $env:PROFILE_BACKUP 'registry'
-              $hive   = Join-Path $profPath 'NTUSER.DAT'
-              if ((Test-Path $regDir) -and (Test-Path $hive) -and (Get-ChildItem $regDir -Filter *.reg -ErrorAction SilentlyContinue)) {
-                  try {
-                      reg load 'HKU\AISTV_TMP' $hive 2>&1 | Out-Null
-                      if ($LASTEXITCODE -eq 0) {
-                          foreach ($f in (Get-ChildItem $regDir -Filter *.reg)) {
-                              $txt = Get-Content -Raw -Encoding Unicode $f.FullName
-                              $txt = $txt -replace 'HKEY_USERS\\S-1-5-21-[0-9\-]+\\', 'HKEY_USERS\AISTV_TMP\'
-                              Set-Content -Path $f.FullName -Value $txt -Encoding Unicode
-                              reg import $f.FullName 2>&1 | Out-Null
-                          }
-                          [gc]::Collect(); [gc]::WaitForPendingFinalizers()
-                          Start-Sleep -Seconds 2
-                          for ($k = 0; $k -lt 5; $k++) {
-                              reg unload 'HKU\AISTV_TMP' 2>&1 | Out-Null
-                              if ($LASTEXITCODE -eq 0) { break }
-                              Start-Sleep -Seconds 2
-                          }
-                          Write-Host "│ ✅ Đã khôi phục cài đặt app (registry HKCU\Software)" -ForegroundColor Green
-                      } else {
-                          Write-Host "│ ⚠️  Không load được hive để khôi phục registry" -ForegroundColor Yellow
-                      }
-                  } catch {
-                      Write-Host "│ ⚠️  Lỗi khôi phục registry: $($_.Exception.Message)" -ForegroundColor Yellow
-                  }
-                  $global:LASTEXITCODE = 0
+              if ($env:RESTORE_SID -and $env:RESTORE_SID -ne $sid) {
+                  Write-Host "│ ⚠️  SID user đổi (cũ: $($env:RESTORE_SID) -> mới: $sid). Khóa DPAPI cũ sẽ không giải mã được: Discord/Chrome/Edge có thể đòi đăng nhập lại." -ForegroundColor Yellow
+              } elseif ($env:RESTORE_SID) {
+                  Write-Host "│ ✅ SID user giống phiên trước (DPAPI giải mã được token đăng nhập)" -ForegroundColor Green
               }
           } else {
               Write-Host "│ ℹ️  Chưa có dữ liệu profile cũ (phiên đầu tiên)" -ForegroundColor Cyan
           }
-
           # Shortcut tới thư mục dữ liệu chung + ổ chung trên Desktop (mọi user)
           try {
               $ws  = New-Object -ComObject WScript.Shell
@@ -710,7 +689,7 @@ jobs:
       # ───────────────────────────────────────────────
       # 6c. RUSTDESK - ID cố định
       #     Cách giữ ID: lưu thư mục cấu hình của service RustDesk + MachineGuid lên ổ chung
-      #     (đi cùng nhánh rdp-data). Secret tuỳ chọn: RUSTDESK_PASSWORD (không có thì dùng mật khẩu RDP)
+      #     (được backup cùng ổ chung bằng restic). Secret tuỳ chọn: RUSTDESK_PASSWORD (không có thì dùng mật khẩu RDP)
       # ───────────────────────────────────────────────
       - name: 🖥️ CÀI RUSTDESK (ID CỐ ĐỊNH)
         if: ${{ inputs.enable_rustdesk }}
@@ -850,6 +829,7 @@ jobs:
 
           $state = [ordered]@{
               user            = $env:RDP_USER
+              sid             = (Get-LocalUser -Name $env:RDP_USER).SID.Value
               password        = $savePass
               passwordSource  = $env:RDP_PASS_SOURCE
               windowsImage    = $env:WINDOWS_IMAGE
@@ -901,7 +881,7 @@ jobs:
           Write-Host "├───────────────────────────────────────────┤" -ForegroundColor Cyan
           Write-Host "│ 💡  Desktop/Documents/Downloads/AppData của user được lưu sang phiên sau" -ForegroundColor Yellow
           Write-Host "│ 💡  App portable: để trong thư mục shared-rdp (app cài ở C: sẽ mất)" -ForegroundColor Yellow
-          Write-Host "│ 💡  Tự lưu mỗi 15 phút và lưu lần cuối khi hết giờ" -ForegroundColor Yellow
+          Write-Host "│ 💡  Tự backup (restic + VSS) mỗi 15 phút và lần cuối khi hết giờ" -ForegroundColor Yellow
           Write-Host "└───────────────────────────────────────────┘" -ForegroundColor Cyan
           exit 0
 
