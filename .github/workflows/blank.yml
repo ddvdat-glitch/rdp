@@ -714,6 +714,8 @@ jobs:
       # ───────────────────────────────────────────────
       - name: 🖥️ CÀI RUSTDESK (ID CỐ ĐỊNH)
         if: ${{ inputs.enable_rustdesk }}
+        timeout-minutes: 8
+        continue-on-error: true
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -758,11 +760,14 @@ jobs:
                   Write-Host "│ ⚠️  Không hỏi được bản mới nhất, dùng bản dự phòng 1.3.9" -ForegroundColor Yellow
               }
               Write-Host "│ ⬇️  $url" -ForegroundColor Cyan
+              $ProgressPreference = 'SilentlyContinue'
               Invoke-WebRequest -Uri $url -OutFile $installer
+              Write-Host "│ ✅ Đã tải xong bộ cài" -ForegroundColor Green
               if (-not (Test-Path $installer)) { throw 'Không tải được bộ cài RustDesk' }
 
               # 3) Cài im lặng
-              Start-Process -FilePath $installer -ArgumentList '--silent-install' -Wait
+              $inst = Start-Process -FilePath $installer -ArgumentList '--silent-install' -PassThru
+              [void]$inst.WaitForExit(60000)
               $svc = $null
               for ($i = 0; $i -lt 30 -and -not $svc; $i++) {
                   $svc = Get-Service -Name 'RustDesk' -ErrorAction SilentlyContinue
@@ -794,7 +799,8 @@ jobs:
                   $pw = $env:RDP_PASS; $passText = '(giống mật khẩu RDP)'
               }
               if ($pw) {
-                  Start-Process -FilePath $rd -ArgumentList @('--password', "`"$pw`"") -Wait -NoNewWindow
+                  $pp = Start-Process -FilePath $rd -ArgumentList @('--password', "`"$pw`"") -PassThru -WindowStyle Hidden
+                  if (-not $pp.WaitForExit(30000)) { Stop-Process -Id $pp.Id -Force -ErrorAction SilentlyContinue }
                   Write-Host "│ ✅ Đã đặt mật khẩu truy cập vĩnh viễn" -ForegroundColor Green
               }
 
