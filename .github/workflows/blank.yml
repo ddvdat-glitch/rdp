@@ -45,6 +45,16 @@ on:
         required: false
         default: true
         type: boolean
+      enable_duckdns:
+        description: '🦆 Cập nhật DuckDNS trỏ về IP Tailscale (cần secret DUCKDNS_TOKEN + DUCKDNS_DOMAIN)'
+        required: false
+        default: true
+        type: boolean
+      enable_rustdesk:
+        description: '🖥️ Cài RustDesk với ID cố định (cấu hình lưu trên ổ chung)'
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -189,6 +199,19 @@ jobs:
               }
           } catch {
               Write-Host "⚠️ Lỗi đồng bộ profile: $($_.Exception.Message)" -ForegroundColor Yellow
+          }
+
+          # ── Đồng bộ cấu hình RustDesk (service) để giữ ID cố định
+          try {
+              $rdCfg = 'C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config'
+              if (Test-Path (Join-Path $rdCfg 'RustDesk.toml')) {
+                  $rdBk = Join-Path $sessionDir 'rustdesk-config'
+                  New-Item -ItemType Directory -Force -Path $rdBk | Out-Null
+                  robocopy $rdCfg $rdBk /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+                  $global:LASTEXITCODE = 0
+              }
+          } catch {
+              Write-Host "⚠️ Lỗi đồng bộ cấu hình RustDesk: $($_.Exception.Message)" -ForegroundColor Yellow
           }
 
           # Cập nhật mốc thời gian trong state
@@ -639,6 +662,175 @@ jobs:
           exit 0
 
       # ───────────────────────────────────────────────
+      # 6b. DUCKDNS - trỏ tên miền cố định về IP Tailscale của phiên này
+      #     Secret cần có: DUCKDNS_TOKEN, DUCKDNS_DOMAIN (vd: myrdp hoặc myrdp.duckdns.org)
+      # ───────────────────────────────────────────────
+      - name: 🦆 CẬP NHẬT DUCKDNS
+        if: ${{ inputs.enable_duckdns }}
+        shell: pwsh
+        env:
+          DUCKDNS_TOKEN: ${{ secrets.DUCKDNS_TOKEN }}
+          DUCKDNS_DOMAIN: ${{ secrets.DUCKDNS_DOMAIN }}
+        run: |
+          Write-Host ""
+          Write-Host "🦆 ĐANG CẬP NHẬT DUCKDNS" -ForegroundColor Yellow
+
+          if (-not $env:DUCKDNS_TOKEN -or -not $env:DUCKDNS_DOMAIN) {
+              Write-Host "⚠️ Thiếu secret DUCKDNS_TOKEN hoặc DUCKDNS_DOMAIN, bỏ qua DuckDNS" -ForegroundColor Yellow
+              exit 0
+          }
+          if (-not $env:TAILSCALE_IP) {
+              Write-Host "⚠️ Chưa có IP Tailscale, bỏ qua DuckDNS" -ForegroundColor Yellow
+              exit 0
+          }
+
+          $domain = ($env:DUCKDNS_DOMAIN.Trim().ToLower()) -replace '\.duckdns\.org$', ''
+          if ($domain -notmatch '^[a-z0-9-]+$') {
+              Write-Host "⚠️ DUCKDNS_DOMAIN không hợp lệ (chỉ nhập 1 tên, vd: myrdp)" -ForegroundColor Yellow
+              exit 0
+          }
+
+          $ok = $false
+          for ($i = 1; $i -le 3; $i++) {
+              try {
+                  $res = Invoke-RestMethod -Uri "https://www.duckdns.org/update?domains=$domain&token=$($env:DUCKDNS_TOKEN)&ip=$($env:TAILSCALE_IP)" -TimeoutSec 20
+                  if ("$res".Trim() -eq 'OK') { $ok = $true; break }
+              } catch {}
+              Start-Sleep -Seconds 5
+          }
+
+          if ($ok) {
+              "DUCKDNS_HOST=${domain}.duckdns.org" >> $env:GITHUB_ENV
+              Write-Host "✅ ${domain}.duckdns.org -> $env:TAILSCALE_IP" -ForegroundColor Green
+          } else {
+              Write-Host "⚠️ DuckDNS trả KO hoặc lỗi mạng (kiểm tra lại token / tên miền)" -ForegroundColor Yellow
+          }
+          exit 0
+
+      # ───────────────────────────────────────────────
+      # 6c. RUSTDESK - ID cố định
+      #     Cách giữ ID: lưu thư mục cấu hình của service RustDesk + MachineGuid lên ổ chung
+      #     (đi cùng nhánh rdp-data). Secret tuỳ chọn: RUSTDESK_PASSWORD (không có thì dùng mật khẩu RDP)
+      # ───────────────────────────────────────────────
+      - name: 🖥️ CÀI RUSTDESK (ID CỐ ĐỊNH)
+        if: ${{ inputs.enable_rustdesk }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUSTDESK_PASSWORD_SECRET: ${{ secrets.RUSTDESK_PASSWORD }}
+        run: |
+          Write-Host ""
+          Write-Host "🖥️  ĐANG CÀI RUSTDESK" -ForegroundColor Yellow
+
+          $svcCfg    = 'C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config'
+          $bkCfg     = Join-Path $env:SHARED_SESSION_DIR 'rustdesk-config'
+          $guidFile  = Join-Path $env:SHARED_SESSION_DIR 'rustdesk-machine-guid.txt'
+          $idFile    = Join-Path $env:SHARED_SESSION_DIR 'rustdesk-id.txt'
+          $rd        = "$env:ProgramFiles\RustDesk\rustdesk.exe"
+          $installer = Join-Path $env:RUNNER_TEMP 'rustdesk-setup.exe'
+
+          try {
+              # 1) Ghim MachineGuid: RustDesk mã hoá ID bằng khoá lấy từ MachineGuid,
+              #    máy ảo mới có GUID khác -> ID bị sinh lại. Dùng lại GUID cũ để giải mã được ID cũ.
+              $cryptoKey = 'HKLM:\SOFTWARE\Microsoft\Cryptography'
+              $savedGuid = $null
+              if (Test-Path $guidFile) {
+                  $g = (Get-Content -Raw $guidFile).Trim()
+                  if ($g -match '^[0-9a-fA-F-]{36}$') { $savedGuid = $g }
+              }
+              if ($savedGuid) {
+                  Set-ItemProperty -Path $cryptoKey -Name 'MachineGuid' -Value $savedGuid -Force
+                  Write-Host "│ ✅ Đã dùng lại MachineGuid của phiên trước" -ForegroundColor Green
+              } else {
+                  $cur = (Get-ItemProperty -Path $cryptoKey).MachineGuid
+                  Set-Content -Path $guidFile -Value $cur -Encoding ASCII
+                  Write-Host "│ ℹ️  Lưu MachineGuid hiện tại để dùng cho các phiên sau" -ForegroundColor Cyan
+              }
+
+              # 2) Tải bản RustDesk mới nhất (dự phòng: 1.3.9)
+              $url = 'https://github.com/rustdesk/rustdesk/releases/download/1.3.9/rustdesk-1.3.9-x86_64.exe'
+              try {
+                  $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/rustdesk/rustdesk/releases/latest' `
+                      -Headers @{ 'User-Agent' = 'aistv-rdp'; 'Authorization' = "Bearer $($env:GH_TOKEN)" } -TimeoutSec 30
+                  $asset = $rel.assets | Where-Object { $_.name -match '^rustdesk-[0-9.]+-x86_64\.exe$' } | Select-Object -First 1
+                  if ($asset) { $url = $asset.browser_download_url }
+              } catch {
+                  Write-Host "│ ⚠️  Không hỏi được bản mới nhất, dùng bản dự phòng 1.3.9" -ForegroundColor Yellow
+              }
+              Write-Host "│ ⬇️  $url" -ForegroundColor Cyan
+              Invoke-WebRequest -Uri $url -OutFile $installer
+              if (-not (Test-Path $installer)) { throw 'Không tải được bộ cài RustDesk' }
+
+              # 3) Cài im lặng
+              Start-Process -FilePath $installer -ArgumentList '--silent-install' -Wait
+              $svc = $null
+              for ($i = 0; $i -lt 30 -and -not $svc; $i++) {
+                  $svc = Get-Service -Name 'RustDesk' -ErrorAction SilentlyContinue
+                  if (-not $svc) { Start-Sleep -Seconds 2 }
+              }
+              if (-not $svc -or -not (Test-Path $rd)) { throw 'RustDesk chưa cài xong (không thấy service/exe)' }
+              Start-Sleep -Seconds 10
+              Write-Host "│ ✅ Đã cài RustDesk" -ForegroundColor Green
+
+              # 4) Dừng service -> khôi phục cấu hình cũ (giữ ID) -> chạy lại
+              Stop-Service -Name 'RustDesk' -Force -ErrorAction SilentlyContinue
+              Get-Process -Name 'rustdesk' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+              Start-Sleep -Seconds 2
+              if (Test-Path (Join-Path $bkCfg 'RustDesk.toml')) {
+                  New-Item -ItemType Directory -Force -Path $svcCfg | Out-Null
+                  robocopy $bkCfg $svcCfg /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+                  $global:LASTEXITCODE = 0
+                  Write-Host "│ ✅ Đã khôi phục cấu hình RustDesk của phiên trước" -ForegroundColor Green
+              } else {
+                  Write-Host "│ ℹ️  Chưa có cấu hình RustDesk cũ (phiên đầu) - tạo ID mới và lưu lại" -ForegroundColor Cyan
+              }
+              Start-Service -Name 'RustDesk'
+              Start-Sleep -Seconds 8
+
+              # 5) Đặt mật khẩu truy cập vĩnh viễn
+              if ($env:RUSTDESK_PASSWORD_SECRET) {
+                  $pw = $env:RUSTDESK_PASSWORD_SECRET; $passText = '(secret RUSTDESK_PASSWORD)'
+              } else {
+                  $pw = $env:RDP_PASS; $passText = '(giống mật khẩu RDP)'
+              }
+              if ($pw) {
+                  Start-Process -FilePath $rd -ArgumentList @('--password', "`"$pw`"") -Wait -NoNewWindow
+                  Write-Host "│ ✅ Đã đặt mật khẩu truy cập vĩnh viễn" -ForegroundColor Green
+              }
+
+              # 6) Lấy ID
+              $id = $null
+              for ($i = 0; $i -lt 10 -and -not $id; $i++) {
+                  Start-Sleep -Seconds 3
+                  $out = (& $rd --get-id | Out-String)
+                  $m = [regex]::Match($out, '(?m)^\s*(\d{6,12})\s*$')
+                  if ($m.Success) { $id = $m.Groups[1].Value }
+              }
+              if (-not $id -and (Test-Path (Join-Path $svcCfg 'RustDesk.toml'))) {
+                  $m = [regex]::Match((Get-Content -Raw (Join-Path $svcCfg 'RustDesk.toml')), "(?m)^id\s*=\s*'(\d+)'")
+                  if ($m.Success) { $id = $m.Groups[1].Value }
+              }
+              if (-not $id) { throw 'Không đọc được ID RustDesk' }
+
+              $oldId = if (Test-Path $idFile) { (Get-Content -Raw $idFile).Trim() } else { $null }
+              if ($oldId -and $oldId -ne $id) {
+                  Write-Host "│ ⚠️  ID ĐÃ ĐỔI (cũ: $oldId -> mới: $id) - chưa giữ được ID cố định" -ForegroundColor Yellow
+              } elseif ($oldId) {
+                  Write-Host "│ ✅ ID RustDesk giữ nguyên: $id" -ForegroundColor Green
+              } else {
+                  Write-Host "│ ✅ ID RustDesk (phiên đầu): $id" -ForegroundColor Green
+              }
+              Set-Content -Path $idFile -Value $id -Encoding ASCII
+
+              "RUSTDESK_ID=$id" >> $env:GITHUB_ENV
+              "RUSTDESK_PASS_TEXT=$passText" >> $env:GITHUB_ENV
+          } catch {
+              Write-Host "⚠️ RustDesk lỗi, bỏ qua: $($_.Exception.Message)" -ForegroundColor Yellow
+          }
+          $global:LASTEXITCODE = 0
+          exit 0
+
+      # ───────────────────────────────────────────────
       # 7. LƯU STATE ĐẦU PHIÊN
       # ───────────────────────────────────────────────
       - name: 💾 Lưu trạng thái phiên vào ổ chung & GitHub
@@ -689,6 +881,8 @@ jobs:
           Write-Host "├───────────────────────────────────────────┤" -ForegroundColor Cyan
           Write-Host "│ 🌐  Địa chỉ: $env:TAILSCALE_IP" -ForegroundColor White
           Write-Host "│ 📍  Port: 3389" -ForegroundColor White
+          if ($env:DUCKDNS_HOST) { Write-Host "│ 🦆  Tên miền: $env:DUCKDNS_HOST" -ForegroundColor White }
+          if ($env:RUSTDESK_ID)  { Write-Host "│ 🖥️  RustDesk ID: $env:RUSTDESK_ID  |  MK: $env:RUSTDESK_PASS_TEXT" -ForegroundColor White }
           Write-Host "│ 👤  Tài khoản: $env:RDP_USER" -ForegroundColor White
           Write-Host "│ 🔐  Mật khẩu: $passText" -ForegroundColor White
           Write-Host "│ 🪟  Windows: ${{ inputs.windows_image }} (build $env:OS_BUILD)" -ForegroundColor White
@@ -876,6 +1070,8 @@ jobs:
           USER_IN: ${{ inputs.rdp_user }}
           PKGS: ${{ inputs.choco_packages }}
           OPT: ${{ inputs.optimize_windows }}
+          DDNS: ${{ inputs.enable_duckdns }}
+          RD: ${{ inputs.enable_rustdesk }}
         run: |
           $wf = [System.IO.Path]::GetFileName(($env:GITHUB_WORKFLOW_REF -split '@')[0])
           Write-Host "Chạy lại workflow: $wf (ref: $env:GITHUB_REF_NAME)" -ForegroundColor Cyan
@@ -886,6 +1082,8 @@ jobs:
               -f "windows_image=$($env:WIN_IMAGE)" `
               -f "rdp_user=$($env:USER_IN)" `
               -f "choco_packages=$($env:PKGS)" `
-              -f "optimize_windows=$($env:OPT)"
+              -f "optimize_windows=$($env:OPT)" `
+              -f "enable_duckdns=$($env:DDNS)" `
+              -f "enable_rustdesk=$($env:RD)"
           if ($LASTEXITCODE -ne 0) { throw 'Không kích hoạt được phiên mới' }
           Write-Host "✅ Đã kích hoạt phiên tiếp theo" -ForegroundColor Green
