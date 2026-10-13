@@ -148,11 +148,10 @@ jobs:
           Write-Host "✅ User riêng: $user  |  Profile: $profileRoot\$user" -ForegroundColor Green
           Write-Host "✅ Windows build: $build ($($env:RUNNER_OS))" -ForegroundColor Green
 
-      - name: 🧰 Tạo script lưu dữ liệu (restic + VSS, dùng lại nhiều lần)
+      - name: 🧰 Tạo script lưu dữ liệu (restic + VSS, chỉ chạy 1 lần lúc kết thúc phiên)
         shell: pwsh
         run: |
           $script = @'
-          param([string]$Reason = 'save')
           $ErrorActionPreference = 'Continue'
 
           if ($env:DATA_RESTORED -ne '1') {
@@ -187,11 +186,15 @@ jobs:
               } catch {}
           }
 
-          # Backup TOÀN BỘ ổ chung (không loại trừ gì). VSS đọc cả file đang bị khóa
-          # (NTUSER.DAT, LevelDB/SQLite của Discord/Chrome...). Nếu VSS lỗi thì thử lại không VSS.
-          $tag = ($Reason -replace '[^A-Za-z0-9_-]', '-')
-          $base = @('backup', $root, '--host', 'aistv', '--tag', $tag, '--quiet')
+          # Backup TĂNG DẦN: restic tự so với bản trước (cùng host + cùng đường dẫn),
+          # chỉ đọc file mới/đổi và chỉ tải lên phần dữ liệu chưa có trong kho.
+          # Bỏ qua các thư mục cache (tên thư mục, khớp ở mọi cấp) để nhẹ và nhanh.
+          $base = @('backup', $root, '--host', 'aistv', '--tag', 'session-end', '--quiet')
+          foreach ($e in @('Code Cache','GPUCache','ShaderCache','GrShaderCache','DawnCache','CacheStorage','INetCache','Cache')) {
+              $base += @('--exclude', $e)
+          }
 
+          # VSS đọc được cả file đang bị khóa (NTUSER.DAT...). Nếu VSS lỗi thì thử lại không VSS.
           & $restic @base '--use-fs-snapshot' '-o' 'vss.timeout=3m'
           $code = $LASTEXITCODE
           if ($code -ne 0 -and $code -ne 3) {
@@ -201,16 +204,22 @@ jobs:
           }
 
           # mã 0 = ok, mã 3 = ok nhưng vài file không đọc được (cảnh báo)
-          if ($code -eq 0) {
-              Write-Host "✅ [$Reason] Đã backup toàn bộ lên restic" -ForegroundColor Green
-              exit 0
-          } elseif ($code -eq 3) {
-              Write-Host "✅ [$Reason] Đã backup (một số file không đọc được, xem cảnh báo phía trên)" -ForegroundColor Yellow
-              exit 0
-          } else {
-              Write-Host "❌ [$Reason] Backup thất bại (mã $code). Dữ liệu vẫn còn trên ổ chung." -ForegroundColor Red
+          if ($code -ne 0 -and $code -ne 3) {
+              Write-Host "❌ Backup thất bại (mã $code). KHÔNG xoá bản cũ, bản backup trước vẫn còn nguyên." -ForegroundColor Red
               exit 1
           }
+          if ($code -eq 3) { Write-Host '✅ Đã backup (một số file không đọc được, xem cảnh báo phía trên)' -ForegroundColor Yellow }
+          else { Write-Host '✅ Đã backup lên restic' -ForegroundColor Green }
+
+          # Chỉ khi backup mới đã thành công mới xoá bản cũ -> kho luôn giữ đúng 1 bản
+          Write-Host '🧹 Chỉ giữ lại 1 bản backup mới nhất, xoá các bản cũ...' -ForegroundColor Cyan
+          & $restic forget --host aistv --group-by host --keep-last 1 --prune --quiet
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host '⚠️ Dọn bản cũ lỗi (không ảnh hưởng bản mới vừa backup)' -ForegroundColor Yellow
+          } else {
+              Write-Host '✅ Kho restic hiện chỉ còn 1 bản backup' -ForegroundColor Green
+          }
+          exit 0
           '@
           Set-Content -Path (Join-Path $env:RUNNER_TEMP 'save-data.ps1') -Value $script -Encoding UTF8
           Write-Host '✅ Đã tạo save-data.ps1' -ForegroundColor Green
@@ -250,11 +259,15 @@ jobs:
       # 2. KHÔI PHỤC DỮ LIỆU TỪ RESTIC
       # ───────────────────────────────────────────────
       - name: ♻️ Khôi phục dữ liệu từ restic
+        timeout-minutes: 40
         shell: pwsh
+        env:
+          RESTIC_PROGRESS_FPS: '0.05'   # in tiến độ ~20 giây/lần để biết không bị treo
         run: |
           $restic = $env:RESTIC_EXE
           $stage  = 'C:\aistv-stage'
 
+          Write-Host '🔎 Đang kiểm tra kho restic...' -ForegroundColor Cyan
           & $restic cat config *> $null
           $code = $LASTEXITCODE
           if ($code -eq 10) {
@@ -279,13 +292,13 @@ jobs:
 
           if (Test-Path $stage) { Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue }
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Write-Host '⬇️  Đang khôi phục snapshot mới nhất...' -ForegroundColor Cyan
-          & $restic restore latest --host aistv --target $stage --quiet
+          Write-Host '⬇️  Đang khôi phục bản backup duy nhất...' -ForegroundColor Cyan
+          & $restic restore latest --host aistv --target $stage --verbose=1
           $rc = $LASTEXITCODE
           if ($rc -ne 0) { Write-Host "⚠️ restore trả mã $rc (một số mục như junction có thể không khôi phục được)" -ForegroundColor Yellow }
 
           # Tìm gốc của ổ chung trong thư mục tạm (không phụ thuộc cách restic đặt tên ổ đĩa)
-          $stateHit = Get-ChildItem $stage -Recurse -Depth 6 -Filter 'rdp-session-state.json' -File -Force -ErrorAction SilentlyContinue | Select-Object -First 1
+          $stateHit = Get-ChildItem $stage -Recurse -Depth 4 -Filter 'rdp-session-state.json' -File -Force -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $stateHit) {
               Write-Host '❌ Khôi phục xong nhưng không thấy dữ liệu phiên trước. Dừng để không ghi đè.' -ForegroundColor Red
               exit 1
@@ -293,15 +306,17 @@ jobs:
           $oldRoot = $stateHit.Directory.Parent.FullName
 
           # Mọi thứ trừ profile -> về ổ chung
-          robocopy $oldRoot $env:SHARED_ROOT /E /B /XJ /XD (Join-Path $oldRoot 'Users') /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+          Write-Host '📂 Đang chép dữ liệu về ổ chung...' -ForegroundColor Cyan
+          robocopy $oldRoot $env:SHARED_ROOT /E /B /XJ /MT:16 /XD (Join-Path $oldRoot 'Users') /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
           $global:LASTEXITCODE = 0
           New-Item -ItemType Directory -Force -Path $env:SHARED_DATA_DIR | Out-Null
 
           # Profile cũ -> giữ tạm ở C: để bước tạo user nạp vào profile mới (gồm cả NTUSER.DAT)
           $oldProf = Join-Path $oldRoot "Users\$($env:RDP_USER)"
           if (Test-Path $oldProf) {
+              Write-Host '👤 Đang chép profile cũ...' -ForegroundColor Cyan
               if (Test-Path $env:PROFILE_BACKUP) { Remove-Item $env:PROFILE_BACKUP -Recurse -Force -ErrorAction SilentlyContinue }
-              robocopy $oldProf $env:PROFILE_BACKUP /E /B /XJ /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+              robocopy $oldProf $env:PROFILE_BACKUP /E /B /XJ /MT:16 /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
               $global:LASTEXITCODE = 0
               Write-Host '✅ Đã lấy lại profile cũ (đầy đủ, gồm registry)' -ForegroundColor Green
           } else {
@@ -324,12 +339,7 @@ jobs:
               } catch { Write-Host '⚠️ File state cũ không đọc được, bỏ qua' -ForegroundColor Yellow }
           }
           'DATA_RESTORED=1' >> $env:GITHUB_ENV
-
-          # Dọn snapshot cũ (giữ 20 bản gần nhất). Lỗi ở đây không ảnh hưởng phiên.
-          try {
-              & $restic forget --host aistv --keep-last 20 --prune --quiet
-          } catch {}
-          $global:LASTEXITCODE = 0
+          # (Việc xoá bản cũ/prune đã chuyển sang bước lưu cuối phiên, không làm ở đây nữa)
           exit 0
 
       # ───────────────────────────────────────────────
@@ -818,7 +828,7 @@ jobs:
       # ───────────────────────────────────────────────
       # 7. LƯU STATE ĐẦU PHIÊN
       # ───────────────────────────────────────────────
-      - name: 💾 Lưu trạng thái phiên vào ổ chung & GitHub
+      - name: 💾 Ghi trạng thái phiên vào ổ chung
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -846,7 +856,7 @@ jobs:
           $keep = Join-Path $env:SHARED_DATA_DIR '.gitkeep'
           if (-not (Test-Path $keep)) { New-Item -ItemType File -Path $keep -Force | Out-Null }
 
-          & (Join-Path $env:RUNNER_TEMP 'save-data.ps1') -Reason 'session-start'
+          Write-Host '✅ Đã ghi trạng thái phiên (sẽ backup lên restic khi kết thúc phiên)' -ForegroundColor Green
           exit 0
 
       # ───────────────────────────────────────────────
@@ -881,35 +891,31 @@ jobs:
           Write-Host "├───────────────────────────────────────────┤" -ForegroundColor Cyan
           Write-Host "│ 💡  Desktop/Documents/Downloads/AppData của user được lưu sang phiên sau" -ForegroundColor Yellow
           Write-Host "│ 💡  App portable: để trong thư mục shared-rdp (app cài ở C: sẽ mất)" -ForegroundColor Yellow
-          Write-Host "│ 💡  Tự backup (restic + VSS) mỗi 15 phút và lần cuối khi hết giờ" -ForegroundColor Yellow
+          Write-Host "│ 💡  Chỉ backup 1 lần khi hết giờ/tắt phiên, kho chỉ giữ 1 bản (chỉ tải phần mới)" -ForegroundColor Yellow
           Write-Host "└───────────────────────────────────────────┘" -ForegroundColor Cyan
           exit 0
 
       # ───────────────────────────────────────────────
-      # 9. DUY TRÌ PHIÊN + AUTOSAVE
+      # 9. DUY TRÌ PHIÊN (không autosave - chỉ backup lúc kết thúc)
       # ───────────────────────────────────────────────
       - name: ⏳ DUY TRÌ PHIÊN LÀM VIỆC
         id: keepalive
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          AUTOSAVE_MINUTES: '15'
         run: |
           $tz         = [System.TimeZoneInfo]::FindSystemTimeZoneById('SE Asia Standard Time')
           $endEpoch   = [long]$env:JOB_START_EPOCH + ([long]$env:TOTAL_MINUTES * 60)
-          $saveScript = Join-Path $env:RUNNER_TEMP 'save-data.ps1'
           $endLocal   = [System.TimeZoneInfo]::ConvertTimeFromUtc([DateTimeOffset]::FromUnixTimeSeconds($endEpoch).UtcDateTime, $tz)
 
           Write-Host ""
           Write-Host "🔄 BẮT ĐẦU DUY TRÌ PHIÊN LÀM VIỆC..." -ForegroundColor Yellow
           Write-Host "🔗 Kết nối: $env:TAILSCALE_IP" -ForegroundColor Cyan
           Write-Host "🗂️ Dữ liệu: $env:SHARED_DATA_DIR" -ForegroundColor Cyan
+          Write-Host "💾 Chỉ backup 1 lần khi kết thúc/hết giờ (giữ 1 bản duy nhất)" -ForegroundColor Cyan
           Write-Host "🕐 Kết thúc dự kiến: $($endLocal.ToString('HH:mm:ss'))" -ForegroundColor Green
           Write-Host ""
 
-          $lastSave = Get-Date
-          $lastLog  = (Get-Date).AddHours(-1)
-          $warned   = $false
+          $lastLog = (Get-Date).AddHours(-1)
+          $warned  = $false
 
           while ($true) {
               $now    = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
@@ -934,15 +940,8 @@ jobs:
 
               # Cảnh báo người dùng trước khi hết giờ 5 phút
               if (-not $warned -and $remain -le 300) {
-                  try { msg * /TIME:290 "Phien RDP sap het gio (5 phut). Hay luu va DONG app dang mo de du lieu duoc luu dung!" } catch {}
+                  try { msg * /TIME:290 "Phien RDP sap het gio (5 phut). Hay luu va DONG app dang mo, he thong se dang xuat va backup 1 lan duy nhat!" } catch {}
                   $warned = $true
-              }
-
-              # Autosave mỗi N phút (không chạy khi sắp hết giờ vì sẽ có lưu cuối)
-              if ((((Get-Date) - $lastSave).TotalMinutes -ge [int]$env:AUTOSAVE_MINUTES) -and $remain -gt 180) {
-                  & $saveScript -Reason 'autosave'
-                  $global:LASTEXITCODE = 0
-                  $lastSave = Get-Date
               }
 
               Start-Sleep -Seconds ([int][math]::Min(30, [math]::Max(1, $remain)))
@@ -953,24 +952,20 @@ jobs:
           exit 0
 
       # ───────────────────────────────────────────────
-      # 10. LƯU CUỐI PHIÊN (luôn chạy, trước khi dọn dẹp)
-      #     Lưu lần 1 (khi user còn đăng nhập -> lấy được registry),
-      #     đăng xuất user để nhả khóa file, rồi lưu lần 2 (đầy đủ file).
+      # 10. LƯU DỮ LIỆU - CHỈ 1 LẦN, LÚC KẾT THÚC PHIÊN
+      #     (hết giờ, hoặc bạn bấm Cancel workflow, hoặc job lỗi - nhờ if: always()).
+      #     Đăng xuất user trước để app đóng, registry (NTUSER.DAT) được ghi xuống đĩa,
+      #     rồi backup tăng dần 1 lần và chỉ giữ lại 1 bản trong kho.
       # ───────────────────────────────────────────────
-      - name: 💾 Lưu dữ liệu cuối phiên
+      - name: 💾 Lưu dữ liệu cuối phiên (giữ 1 bản duy nhất)
         if: always()
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           $saveScript = Join-Path $env:RUNNER_TEMP 'save-data.ps1'
           if (-not (Test-Path $saveScript)) {
               Write-Host 'ℹ️ Không có script lưu, bỏ qua' -ForegroundColor Cyan
               exit 0
           }
-
-          & $saveScript -Reason 'session-end-1'
-          $global:LASTEXITCODE = 0
 
           # Đăng xuất các phiên RDP của user riêng để app đóng và file không bị khóa
           $u = $env:RDP_USER
@@ -985,16 +980,23 @@ jobs:
                       }
                   }
                   if ($loggedOff) {
-                      Write-Host "🔒 Đã đăng xuất user $u, chờ nhả file..." -ForegroundColor Cyan
-                      Start-Sleep -Seconds 15
-                      & $saveScript -Reason 'session-end'
+                      Write-Host "🔒 Đã đăng xuất user $u, chờ nhả file & registry..." -ForegroundColor Cyan
+                      $sid = (Get-LocalUser -Name $u -ErrorAction SilentlyContinue).SID.Value
+                      for ($i = 0; $i -lt 12; $i++) {
+                          if (-not $sid -or -not (Test-Path "Registry::HKEY_USERS\$sid")) { break }
+                          Start-Sleep -Seconds 5
+                      }
+                      Start-Sleep -Seconds 5
                   }
               } catch {
                   Write-Host "⚠️ Không đăng xuất được user: $($_.Exception.Message)" -ForegroundColor Yellow
               }
           }
+
+          & $saveScript
+          $code = $LASTEXITCODE
           $global:LASTEXITCODE = 0
-          exit 0
+          exit $code
 
       # ───────────────────────────────────────────────
       # 11. DỌN DẸP
