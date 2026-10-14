@@ -84,9 +84,9 @@ jobs:
 
     steps:
       # ───────────────────────────────────────────────
-      # 1. KHỞI TẠO KHÔNG GIAN LƯU TRỮ & TẢI Ổ ĐĨA TỪ GITHUB
+      # 1. DỰNG Ổ ĐĨA RIÊNG NGAY LẬP TỨC & CHUẨN BỊ KHO GITHUB
       # ───────────────────────────────────────────────
-      - name: 🧱 Chuẩn bị thông số & Kho lưu trữ GitHub
+      - name: 🧱 Dựng ổ đĩa riêng & Chuẩn bị thông số GitHub
         shell: pwsh
         env:
           INPUT_DURATION: ${{ inputs.duration }}
@@ -112,24 +112,59 @@ jobs:
           $dl = ($env:DRIVE_LETTER.Trim() -replace '[^A-Za-z]', '').ToUpper()
           if (-not $dl -or $dl -in @('C','D')) { $dl = 'X' }
           "MOUNT_LETTER=$dl" >> $env:GITHUB_ENV
-          $sharedRoot = "${dl}:\AISTV-SYSTEM"
 
-          # Chọn nơi đặt file VHDX vật lý trên ổ có dung lượng trống lớn nhất (ưu tiên D:, rồi C:)
+          # Chọn nơi đặt VHDX vật lý trên ổ có dung lượng trống lớn nhất (ưu tiên D:, rồi C:)
           $hostDrive = 'D:\'
           if (-not (Test-Path 'D:\') -or ((Get-PSDrive D).Free -lt 30GB)) { $hostDrive = 'C:\' }
-          $vhdContainer = Join-Path $hostDrive 'AISTV-VHD-HOST'
+          $vhdContainer = [System.IO.Path]::Combine($hostDrive, 'AISTV-VHD-HOST')
           New-Item -ItemType Directory -Force -Path $vhdContainer | Out-Null
-          $vhdFile = Join-Path $vhdContainer 'aistv-os-disk.vhdx'
+          $vhdFile = [System.IO.Path]::Combine($vhdContainer, 'aistv-os-disk.vhdx')
+
+          # Khởi tạo và Mount ổ đĩa riêng ngay lập tức để mọi lệnh phía sau đều nhận diện được ổ X:
+          $sizeBytes = ([int64]$env:VHD_SIZE_GB) * 1GB
+          Write-Host "💽 Đang dựng ổ đĩa riêng ${dl}:\ ($($env:VHD_SIZE_GB) GB Dynamic VHDX)..." -ForegroundColor Cyan
+          $mounted = $false
+          try {
+              if (-not (Test-Path $vhdFile)) {
+                  New-VHD -Path $vhdFile -SizeBytes $sizeBytes -Dynamic | Mount-VHD -PassThru | Initialize-Disk -PartitionStyle GPT -PassThru | New-Partition -DriveLetter $dl -UseMaximumSize | Format-Volume -FileSystem NTFS -NewFileSystemLabel 'AISTV-OS' -Confirm:$false | Out-Null
+              } else {
+                  Mount-VHD -Path $vhdFile
+              }
+              $null = Get-PSDrive -Name $dl -ErrorAction Stop
+              if (Test-Path "${dl}:\") { $mounted = $true }
+          } catch {
+              Write-Host "⚠️ Chuyển sang cơ chế Ổ Đĩa Ảo Kernel DOS Devices cho ${dl}:\..." -ForegroundColor Yellow
+          }
+
+          if (-not $mounted) {
+              $fallbackDir = [System.IO.Path]::Combine($vhdContainer, 'VIRTUAL-DRIVE-ROOT')
+              New-Item -ItemType Directory -Force -Path $fallbackDir | Out-Null
+              & subst "${dl}:" $fallbackDir
+              Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\DOS Devices' -Name "${dl}:" -Value "\??\$fallbackDir" -Type String -Force
+              $null = New-PSDrive -Name $dl -PSProvider FileSystem -Root "${dl}:\" -Scope Global -ErrorAction SilentlyContinue
+          }
+
+          $sharedRoot       = "${dl}:\AISTV-SYSTEM"
+          $sharedSessionDir = "$sharedRoot\sessions"
+          $sharedDataDir    = "$sharedRoot\DATA"
+          $sharedOsDir      = "$sharedRoot\OS-OVERLAY"
+          $sharedStateFile  = "$sharedSessionDir\rdp-session-state.json"
+          $profileRoot      = "$sharedRoot\Users"
+          $profileBackup    = 'C:\aistv-profile-old'
+
+          foreach ($p in @($sharedRoot, $sharedSessionDir, $sharedDataDir, $sharedOsDir, $profileRoot)) {
+              New-Item -ItemType Directory -Force -Path $p | Out-Null
+          }
 
           "VHD_CONTAINER=$vhdContainer" >> $env:GITHUB_ENV
           "VHD_FILE=$vhdFile" >> $env:GITHUB_ENV
           "SHARED_ROOT=$sharedRoot" >> $env:GITHUB_ENV
-          "SHARED_SESSION_DIR=$(Join-Path $sharedRoot 'sessions')" >> $env:GITHUB_ENV
-          "SHARED_DATA_DIR=$(Join-Path $sharedRoot 'DATA')" >> $env:GITHUB_ENV
-          "SHARED_OS_DIR=$(Join-Path $sharedRoot 'OS-OVERLAY')" >> $env:GITHUB_ENV
-          "SHARED_STATE_FILE=$(Join-Path $sharedRoot 'sessions\rdp-session-state.json')" >> $env:GITHUB_ENV
-          "PROFILE_ROOT=$(Join-Path $sharedRoot 'Users')" >> $env:GITHUB_ENV
-          "PROFILE_BACKUP=C:\aistv-profile-old" >> $env:GITHUB_ENV
+          "SHARED_SESSION_DIR=$sharedSessionDir" >> $env:GITHUB_ENV
+          "SHARED_DATA_DIR=$sharedDataDir" >> $env:GITHUB_ENV
+          "SHARED_OS_DIR=$sharedOsDir" >> $env:GITHUB_ENV
+          "SHARED_STATE_FILE=$sharedStateFile" >> $env:GITHUB_ENV
+          "PROFILE_ROOT=$profileRoot" >> $env:GITHUB_ENV
+          "PROFILE_BACKUP=$profileBackup" >> $env:GITHUB_ENV
 
           $build = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').CurrentBuild
           "OS_BUILD=$build" >> $env:GITHUB_ENV
@@ -138,12 +173,12 @@ jobs:
           $relCheck = gh release view $env:RELEASE_TAG --repo $env:GH_REPO 2>&1
           if ($LASTEXITCODE -ne 0) {
               Write-Host "ℹ️ Tạo kho lưu trữ Release [$($env:RELEASE_TAG)] trên GitHub..." -ForegroundColor Cyan
-              $dummy = Join-Path $env:RUNNER_TEMP 'init.txt'
+              $dummy = [System.IO.Path]::Combine($env:RUNNER_TEMP, 'init.txt')
               Set-Content -Path $dummy -Value "AI-STV Persistent Storage Initialized"
               gh release create $env:RELEASE_TAG $dummy --repo $env:GH_REPO --title "AI-STV Persistent OS Drive" --notes "Kho lưu trữ ổ đĩa tự động giữa các phiên (Không xóa)"
           }
           $global:LASTEXITCODE = 0
-          Write-Host "✅ Ổ đĩa hệ thống đích: ${dl}:\ ($sharedRoot)" -ForegroundColor Green
+          Write-Host "✅ Đã mount thành công ổ đĩa riêng: ${dl}:\ ($sharedRoot)" -ForegroundColor Green
 
       # ───────────────────────────────────────────────
       # 2. TẠO ENGINE ĐỒNG BỘ Ổ ĐĨA LÊN GITHUB (RELEASE CHUNKS + GIT BRANCH)
@@ -153,8 +188,7 @@ jobs:
         run: |
           $script = @'
           param(
-              [string]$Reason = 'save',
-              [switch]$FullUnmount = $false
+              [string]$Reason = 'save'
           )
           $ErrorActionPreference = 'Continue'
 
@@ -173,11 +207,11 @@ jobs:
           Write-Host "💾 [$Reason] Đang thu thập trạng thái Hệ Điều Hành, Registry, Services & App..." -ForegroundColor Cyan
 
           # 1. Xuất toàn bộ nhánh Registry quan trọng của hệ thống & phần mềm đã cài
-          $regBk = Join-Path $osDir 'Registry'
+          $regBk = "$osDir\Registry"
           New-Item -ItemType Directory -Force -Path $regBk | Out-Null
-          reg export "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall" (Join-Path $regBk 'Uninstall-x64.reg') /y *> $null
-          reg export "HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall" (Join-Path $regBk 'Uninstall-x86.reg') /y *> $null
-          reg export "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" (Join-Path $regBk 'System-Env.reg') /y *> $null
+          reg export "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall" "$regBk\Uninstall-x64.reg" /y *> $null
+          reg export "HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall" "$regBk\Uninstall-x86.reg" /y *> $null
+          reg export "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "$regBk\System-Env.reg" /y *> $null
 
           # Xuất HKCU của user nếu đang load
           $u = $env:RDP_USER
@@ -186,8 +220,8 @@ jobs:
               if ($userObj) {
                   $sid = $userObj.SID.Value
                   if (Test-Path "Registry::HKU\$sid") {
-                      reg export "HKU\$sid\Environment" (Join-Path $regBk 'User-Env.reg') /y *> $null
-                      reg export "HKU\$sid\Software" (Join-Path $regBk 'User-Software.reg') /y *> $null
+                      reg export "HKU\$sid\Environment" "$regBk\User-Env.reg" /y *> $null
+                      reg export "HKU\$sid\Software" "$regBk\User-Software.reg" /y *> $null
                   }
               }
           }
@@ -195,19 +229,19 @@ jobs:
           # 2. Đồng bộ cấu hình RustDesk, Tailscale State, Choco Lib & ProgramData quan trọng
           try {
               $rdCfg = 'C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config'
-              if (Test-Path (Join-Path $rdCfg 'RustDesk.toml')) {
-                  $rdBk = Join-Path $env:SHARED_SESSION_DIR 'rustdesk-config'
+              if (Test-Path "$rdCfg\RustDesk.toml") {
+                  $rdBk = "$($env:SHARED_SESSION_DIR)\rustdesk-config"
                   New-Item -ItemType Directory -Force -Path $rdBk | Out-Null
                   robocopy $rdCfg $rdBk /MIR /B /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
               }
               $tsData = 'C:\ProgramData\Tailscale'
               if (Test-Path $tsData) {
-                  $tsBk = Join-Path $osDir 'Tailscale-State'
+                  $tsBk = "$osDir\Tailscale-State"
                   New-Item -ItemType Directory -Force -Path $tsBk | Out-Null
                   robocopy $tsData $tsBk /MIR /B /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
               }
               if (Test-Path 'C:\ProgramData\chocolatey\lib') {
-                  $chocoBk = Join-Path $osDir 'chocolatey-lib'
+                  $chocoBk = "$osDir\chocolatey-lib"
                   New-Item -ItemType Directory -Force -Path $chocoBk | Out-Null
                   robocopy 'C:\ProgramData\chocolatey\lib' $chocoBk /MIR /B /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
               }
@@ -226,8 +260,8 @@ jobs:
           }
 
           # 4. Đẩy state & metadata trực tiếp vào nhánh Git (aistv-drive-state) trên repo
+          $gitStage = [System.IO.Path]::Combine($env:RUNNER_TEMP, 'git-state-sync')
           try {
-              $gitStage = Join-Path $env:RUNNER_TEMP 'git-state-sync'
               if (Test-Path $gitStage) { Remove-Item $gitStage -Recurse -Force -ErrorAction SilentlyContinue }
               New-Item -ItemType Directory -Force -Path $gitStage | Out-Null
               Push-Location $gitStage
@@ -241,8 +275,8 @@ jobs:
               } else {
                   git checkout --orphan $env:STATE_BRANCH -q
               }
-              robocopy $env:SHARED_SESSION_DIR (Join-Path $gitStage 'sessions') /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
-              robocopy $regBk (Join-Path $gitStage 'registry') /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+              robocopy $env:SHARED_SESSION_DIR "$gitStage\sessions" /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+              robocopy $regBk "$gitStage\registry" /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
               $global:LASTEXITCODE = 0
               git add -A
               git commit -m "Sync session state [$Reason] at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -q 2>$null
@@ -254,14 +288,13 @@ jobs:
           }
 
           # 5. Đóng gói toàn bộ ổ đĩa riêng thành các phân mảnh 1900MB và đẩy thẳng lên GitHub Release
-          $packDir = Join-Path $env:RUNNER_TEMP "gh-pack-$Reason"
+          $packDir = [System.IO.Path]::Combine($env:RUNNER_TEMP, "gh-pack-$Reason")
           if (Test-Path $packDir) { Remove-Item $packDir -Recurse -Force -ErrorAction SilentlyContinue }
           New-Item -ItemType Directory -Force -Path $packDir | Out-Null
 
-          $archiveBase = Join-Path $packDir 'aistv-drive.7z'
+          $archiveBase = "$packDir\aistv-drive.7z"
           Write-Host "📦 [$Reason] Đang nén toàn bộ ổ đĩa $root (đa luồng, đọc cả file đang mở)..." -ForegroundColor Cyan
 
-          # Dùng 7z với cờ -ssw (nén cả file đang bị giữ khoá đọc/ghi) và cắt mỗi mảnh 1900MB (dưới ngưỡng 2GB của GitHub Release)
           & 7z a -t7z -mx=1 -mmt=on -ssw -v1900m "$archiveBase" "$root\*" `-xr!"*\Pagefile.sys" `-xr!"*\System Volume Information" *> $null
           $7zCode = $LASTEXITCODE
 
@@ -271,7 +304,6 @@ jobs:
               exit 1
           }
 
-          # Tạo bảng kê manifest các phân mảnh để phiên sau tải về ghép lại chuẩn xác 100%
           $manifest = [ordered]@{
               updatedUtc = (Get-Date).ToUniversalTime().ToString('o')
               reason     = $Reason
@@ -284,7 +316,7 @@ jobs:
                   }
               })
           }
-          $manifestPath = Join-Path $packDir 'drive-manifest.json'
+          $manifestPath = "$packDir\drive-manifest.json"
           $manifest | ConvertTo-Json -Depth 5 | Set-Content -Path $manifestPath -Encoding UTF8
 
           Write-Host "⬆️  [$Reason] Đang tải $($chunks.Count) mảnh ổ đĩa lên GitHub Release ($($env:RELEASE_TAG))..." -ForegroundColor Cyan
@@ -296,7 +328,6 @@ jobs:
               exit 1
           }
 
-          # Dọn các mảnh thừa của lần lưu trước nếu dung lượng ổ giảm (ít mảnh hơn trước)
           try {
               $relJson = gh release view $env:RELEASE_TAG --repo $env:GH_REPO --json assets | ConvertFrom-Json
               $validNames = @($chunks.Name) + @('drive-manifest.json', 'init.txt')
@@ -311,51 +342,22 @@ jobs:
           Write-Host "✅ [$Reason] Đã lưu trọn vẹn toàn bộ ổ đĩa lên GitHub!" -ForegroundColor Green
           exit 0
           '@
-          Set-Content -Path (Join-Path $env:RUNNER_TEMP 'save-data.ps1') -Value $script -Encoding UTF8
+          Set-Content -Path ([System.IO.Path]::Combine($env:RUNNER_TEMP, 'save-data.ps1')) -Value $script -Encoding UTF8
           Write-Host '✅ Đã tạo save-data.ps1 (GitHub Native Storage Engine)' -ForegroundColor Green
 
       # ───────────────────────────────────────────────
-      # 3. DỰNG Ổ ĐĨA ẢO VHDX RIÊNG & KHÔI PHỤC DỮ LIỆU TỪ GITHUB
+      # 3. KHÔI PHỤC TOÀN BỘ Ổ ĐĨA TỪ GITHUB RELEASE
       # ───────────────────────────────────────────────
-      - name: ♻️ Dựng ổ đĩa riêng & Khôi phục toàn bộ dữ liệu từ GitHub
+      - name: ♻️ Khôi phục toàn bộ ổ đĩa từ GitHub
         shell: pwsh
         run: |
           $dl = $env:MOUNT_LETTER
-          $vhd = $env:VHD_FILE
-          $sizeBytes = ([int64]$env:VHD_SIZE_GB) * 1GB
-
-          Write-Host "💽 Đang khởi tạo ổ đĩa riêng ${dl}:\ ($($env:VHD_SIZE_GB) GB Dynamic VHDX)..." -ForegroundColor Cyan
-          $ mounted = $false
-          try {
-              if (-not (Test-Path $vhd)) {
-                  New-VHD -Path $vhd -SizeBytes $sizeBytes -Dynamic | Mount-VHD -PassThru | Initialize-Disk -PartitionStyle GPT -PassThru | New-Partition -DriveLetter $dl -UseMaximumSize | Format-Volume -FileSystem NTFS -NewFileSystemLabel 'AISTV-OS' -Confirm:$false | Out-Null
-              } else {
-                  Mount-VHD -Path $vhd
-              }
-              if (Test-Path "${dl}:\") { $mounted = $true }
-          } catch {
-              Write-Host "⚠️ Máy chủ không cho phép tạo VHDX trực tiếp ($($_.Exception.Message)), chuyển sang cơ chế Ổ Đĩa Ảo SUBST gắn cứng..." -ForegroundColor Yellow
-          }
-
-          if (-not $mounted) {
-              $fallbackDir = Join-Path $env:VHD_CONTAINER 'VIRTUAL-DRIVE-ROOT'
-              New-Item -ItemType Directory -Force -Path $fallbackDir | Out-Null
-              & subst "${dl}:" $fallbackDir
-              # Đăng ký DosDevices vào HKLM để mọi Service, SYSTEM và phiên RDP đều nhìn thấy ổ đĩa này
-              Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\DOS Devices' -Name "${dl}:" -Value "\??\$fallbackDir" -Type String -Force
-          }
-
-          foreach ($p in @($env:SHARED_ROOT, $env:SHARED_SESSION_DIR, $env:SHARED_DATA_DIR, $env:SHARED_OS_DIR, $env:PROFILE_ROOT)) {
-              New-Item -ItemType Directory -Force -Path $p | Out-Null
-          }
-
-          # Kiểm tra xem trên GitHub Release đã có bản lưu ổ đĩa nào chưa
-          $dlDir = Join-Path $env:RUNNER_TEMP 'gh-restore'
+          $dlDir = [System.IO.Path]::Combine($env:RUNNER_TEMP, 'gh-restore')
           if (Test-Path $dlDir) { Remove-Item $dlDir -Recurse -Force -ErrorAction SilentlyContinue }
           New-Item -ItemType Directory -Force -Path $dlDir | Out-Null
 
           gh release download $env:RELEASE_TAG --repo $env:GH_REPO --pattern 'drive-manifest.json' --dir $dlDir 2>$null
-          $manifestFile = Join-Path $dlDir 'drive-manifest.json'
+          $manifestFile = "$dlDir\drive-manifest.json"
 
           if (-not (Test-Path $manifestFile)) {
               Write-Host "ℹ️ Chưa có bản lưu ổ đĩa trên GitHub - đây là phiên khởi tạo đầu tiên!" -ForegroundColor Cyan
@@ -372,13 +374,13 @@ jobs:
               exit 1
           }
 
-          $firstChunk = Join-Path $dlDir 'aistv-drive.7z.001'
+          $firstChunk = "$dlDir\aistv-drive.7z.001"
           if (-not (Test-Path $firstChunk)) {
               Write-Host "❌ Thiếu mảnh ghép đầu tiên (aistv-drive.7z.001)!" -ForegroundColor Red
               exit 1
           }
 
-          $stage = Join-Path $env:VHD_CONTAINER 'restore-stage'
+          $stage = "$($env:VHD_CONTAINER)\restore-stage"
           if (Test-Path $stage) { Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue }
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
@@ -387,11 +389,11 @@ jobs:
           Remove-Item $dlDir -Recurse -Force -ErrorAction SilentlyContinue
 
           # Chuyển toàn bộ dữ liệu (trừ thư mục Users đang chờ nạp profile) vào ổ riêng
-          robocopy $stage $env:SHARED_ROOT /E /B /XJ /XD (Join-Path $stage 'Users') /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+          robocopy $stage $env:SHARED_ROOT /E /B /XJ /XD "$stage\Users" /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
           $global:LASTEXITCODE = 0
 
           # Giữ riêng Profile cũ để bước tạo User nạp chuẩn SID + NTUSER.DAT
-          $oldProf = Join-Path $stage "Users\$($env:RDP_USER)"
+          $oldProf = "$stage\Users\$($env:RDP_USER)"
           if (Test-Path $oldProf) {
               if (Test-Path $env:PROFILE_BACKUP) { Remove-Item $env:PROFILE_BACKUP -Recurse -Force -ErrorAction SilentlyContinue }
               robocopy $oldProf $env:PROFILE_BACKUP /E /B /XJ /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
@@ -401,7 +403,7 @@ jobs:
           Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
 
           # Nạp lại các khóa Registry hệ thống, biến môi trường và danh sách phần mềm từ ổ riêng
-          $regBk = Join-Path $env:SHARED_OS_DIR 'Registry'
+          $regBk = "$($env:SHARED_OS_DIR)\Registry"
           if (Test-Path $regBk) {
               Get-ChildItem $regBk -Filter '*.reg' | Where-Object { $_.Name -notlike 'User-*' } | ForEach-Object {
                   reg import $_.FullName *> $null
@@ -410,7 +412,7 @@ jobs:
           }
 
           # Khôi phục Chocolatey lib nếu có
-          $chocoBk = Join-Path $env:SHARED_OS_DIR 'chocolatey-lib'
+          $chocoBk = "$($env:SHARED_OS_DIR)\chocolatey-lib"
           if (Test-Path $chocoBk) {
               New-Item -ItemType Directory -Force -Path 'C:\ProgramData\chocolatey\lib' | Out-Null
               robocopy $chocoBk 'C:\ProgramData\chocolatey\lib' /E /B /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
@@ -438,29 +440,25 @@ jobs:
       - name: 🔗 Gắn kết thư mục Hệ Điều Hành & Phần Mềm sang ổ riêng
         shell: pwsh
         run: |
-          $osDir = $env:SHARED_OS_DIR
-          $appsDir = Join-Path $osDir 'InstalledApps'
-          $progDataDir = Join-Path $osDir 'ProgramData-Custom'
-          $binDir = Join-Path $osDir 'bin'
-          $chocoCache = Join-Path $osDir 'choco-cache'
+          $osDir       = $env:SHARED_OS_DIR
+          $appsDir     = "$osDir\InstalledApps"
+          $appsDirX86  = "$osDir\InstalledApps-x86"
+          $progDataDir = "$osDir\ProgramData-Custom"
+          $binDir      = "$osDir\bin"
+          $chocoCache  = "$osDir\choco-cache"
 
-          foreach ($d in @($appsDir, $progDataDir, $binDir, $chocoCache)) {
+          foreach ($d in @($appsDir, $appsDirX86, $progDataDir, $binDir, $chocoCache)) {
               New-Item -ItemType Directory -Force -Path $d | Out-Null
           }
 
-          # Đổi hướng cài đặt phần mềm mặc định của Windows (ProgramFilesDir) sang ổ đĩa riêng
-          # Mọi bộ cài đặt .exe / .msi chạy trong phiên sẽ tự động cài thẳng vào ổ riêng!
           $cvKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion'
           Set-ItemProperty -Path $cvKey -Name 'ProgramFilesDir' -Value $appsDir -Force -ErrorAction SilentlyContinue
-          Set-ItemProperty -Path $cvKey -Name 'ProgramFilesDir (x86)' -Value (Join-Path $osDir 'InstalledApps-x86') -Force -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force -Path (Join-Path $osDir 'InstalledApps-x86') | Out-Null
+          Set-ItemProperty -Path $cvKey -Name 'ProgramFilesDir (x86)' -Value $appsDirX86 -Force -ErrorAction SilentlyContinue
 
-          # Tạo Junction C:\AISTV-Apps trỏ thẳng sang ổ riêng để đường dẫn tuyệt đối không bao giờ gãy
           if (-not (Test-Path 'C:\AISTV-Apps')) {
               New-Item -ItemType Junction -Path 'C:\AISTV-Apps' -Target $appsDir -Force | Out-Null
           }
 
-          # Thêm thư mục bin trên ổ riêng vào System PATH vĩnh viễn
           $sysEnv = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
           $curPath = (Get-ItemProperty -Path $sysEnv -Name 'Path').Path
           if ($curPath -notlike "*$binDir*") {
@@ -518,7 +516,7 @@ jobs:
         env:
           PKGS: ${{ inputs.choco_packages }}
         run: |
-          $pkgListFile = Join-Path $env:SHARED_OS_DIR 'installed-choco-packages.txt'
+          $pkgListFile = "$($env:SHARED_OS_DIR)\installed-choco-packages.txt"
           $savedPkgs = @()
           if (Test-Path $pkgListFile) {
               $savedPkgs = @(Get-Content $pkgListFile | Where-Object { $_ -match '^[A-Za-z0-9._\-]+$' })
@@ -530,7 +528,7 @@ jobs:
           $allPkgs = @($savedPkgs + $inputPkgs | Select-Object -Unique)
           if ($allPkgs.Count -gt 0) {
               $allPkgs | Set-Content -Path $pkgListFile -Encoding UTF8
-              $chocoCache = Join-Path $env:SHARED_OS_DIR 'choco-cache'
+              $chocoCache = "$($env:SHARED_OS_DIR)\choco-cache"
               foreach ($p in $allPkgs) {
                   Write-Host "📦 Đang đồng bộ gói $p (sử dụng cache trên ổ riêng)..." -ForegroundColor Cyan
                   choco install $p -y --no-progress --limit-output --cache-location="$chocoCache"
@@ -581,7 +579,6 @@ jobs:
           "RDP_PASS=$matKhau" >> $env:GITHUB_ENV
           "RDP_PASS_SOURCE=$source" >> $env:GITHUB_ENV
 
-          # Trỏ toàn bộ ProfilesDirectory sang ổ đĩa riêng
           $root = $env:PROFILE_ROOT
           New-Item -ItemType Directory -Force -Path $root | Out-Null
           $pl = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList'
@@ -602,23 +599,20 @@ jobs:
           [void][AistvProfile]::CreateProfile($sid, $user, $sb, 260)
           $profPath = $sb.ToString()
           if ([string]::IsNullOrWhiteSpace($profPath) -or -not (Test-Path $profPath)) {
-              $profPath = Join-Path $root $user
+              $profPath = "$root\$user"
               New-Item -ItemType Directory -Force -Path $profPath | Out-Null
           }
           "PROFILE_PATH=$profPath" >> $env:GITHUB_ENV
 
-          # Khôi phục toàn bộ dữ liệu Profile cũ (Desktop, Downloads, AppData, Chrome/Discord data, NTUSER.DAT)
           if ((Test-Path $env:PROFILE_BACKUP) -and (Test-Path $profPath)) {
               robocopy $env:PROFILE_BACKUP $profPath /E /B /XJ /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
               $global:LASTEXITCODE = 0
               Remove-Item $env:PROFILE_BACKUP -Recurse -Force -ErrorAction SilentlyContinue
-              # Cấp full quyền sở hữu thư mục profile cho user mới tạo để không bị lỗi Access Denied
               & icacls $profPath /setowner "$user" /T /C /Q *> $null
               & icacls $profPath /grant "${user}:(OI)(CI)F" /T /C /Q *> $null
               Write-Host "✅ Đã nạp lại toàn bộ Profile người dùng vào: $profPath" -ForegroundColor Green
           }
 
-          # Tạo Shortcut trên Desktop trỏ vào ổ riêng và kho App
           try {
               $ws = New-Object -ComObject WScript.Shell
               $lnk1 = $ws.CreateShortcut('C:\Users\Public\Desktop\O-DIA-RIENG-AISTV.lnk')
@@ -650,9 +644,9 @@ jobs:
           Remove-Item $msiPath -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 6
 
-          # Khôi phục state Tailscale từ ổ riêng để giữ nguyên IP Tailscale của phiên trước
-          $tsBk = Join-Path $env:SHARED_OS_DIR 'Tailscale-State'$tsData = 'C:\ProgramData\Tailscale'
-          if (Test-Path (Join-Path $tsBk 'server-state.conf')) {
+          $tsBk = "$($env:SHARED_OS_DIR)\Tailscale-State"
+          $tsData = 'C:\ProgramData\Tailscale'
+          if (Test-Path "$tsBk\server-state.conf") {
               Stop-Service Tailscale -Force -ErrorAction SilentlyContinue
               New-Item -ItemType Directory -Force -Path $tsData | Out-Null
               robocopy $tsBk $tsData /MIR /B /R:1 /W:1 /NFL /NDL /NJH /NJS /NP \vert{} Out-Null$global:LASTEXITCODE = 0
@@ -709,12 +703,11 @@ jobs:
         env:
           RUSTDESK_PASSWORD_SECRET: ${{ secrets.RUSTDESK_PASSWORD }}
         run: |
-          $svcCfg    = 'C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config'
-          $bkCfg     = Join-Path$env:SHARED_SESSION_DIR 'rustdesk-config'
-          $guidFile  = Join-Path$env:SHARED_SESSION_DIR 'rustdesk-machine-guid.txt'
-          $idFile    = Join-Path$env:SHARED_SESSION_DIR 'rustdesk-id.txt'
+          $svcCfg    = 'C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config'$bkCfg     = "$($env:SHARED_SESSION_DIR)\rustdesk-config"
+          $guidFile  = "$($env:SHARED_SESSION_DIR)\rustdesk-machine-guid.txt"
+          $idFile    = "$($env:SHARED_SESSION_DIR)\rustdesk-id.txt"
           $rd        = "$env:ProgramFiles\RustDesk\rustdesk.exe"
-          $installer = Join-Path$env:RUNNER_TEMP 'rustdesk-setup.exe'
+          $installer = [System.IO.Path]::Combine($env:RUNNER_TEMP, 'rustdesk-setup.exe')
 
           try {
               $cryptoKey = 'HKLM:\SOFTWARE\Microsoft\Cryptography'
@@ -738,7 +731,7 @@ jobs:
               Stop-Service -Name 'RustDesk' -Force -ErrorAction SilentlyContinue
               Get-Process -Name 'rustdesk' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
               Start-Sleep -Seconds 2
-              if (Test-Path (Join-Path $bkCfg 'RustDesk.toml')) {
+              if (Test-Path "$bkCfg\RustDesk.toml") {
                   New-Item -ItemType Directory -Force -Path $svcCfg | Out-Null
                   robocopy $bkCfg $svcCfg /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP \vert{} Out-Null$global:LASTEXITCODE = 0
               }
@@ -790,7 +783,7 @@ jobs:
               lastUpdatedUtc  = (Get-Date).ToUniversalTime().ToString('o')
           }
           $state \vert{} ConvertTo-Json -Depth 5 \vert{} Set-Content -Path$env:SHARED_STATE_FILE -Encoding UTF8
-          & (Join-Path $env:RUNNER_TEMP 'save-data.ps1') -Reason 'session-start'
+          & ([System.IO.Path]::Combine($env:RUNNER_TEMP, 'save-data.ps1')) -Reason 'session-start'
           exit 0
 
       - name: 🎉 THÔNG TIN KẾT NỐI & Ổ ĐĨA HỆ THỐNG
@@ -827,7 +820,7 @@ jobs:
           AUTOSAVE_MINUTES: '20'
         run: |
           $endEpoch   = [long]$env:JOB_START_EPOCH + ([long]$env:TOTAL_MINUTES * 60)
-          $saveScript = Join-Path$env:RUNNER_TEMP 'save-data.ps1'
+          $saveScript = [System.IO.Path]::Combine($env:RUNNER_TEMP, 'save-data.ps1')
           $lastSave   = Get-Date$lastLog    = (Get-Date).AddHours(-1)
           $warned     =$false
 
@@ -868,13 +861,11 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $saveScript = Join-Path$env:RUNNER_TEMP 'save-data.ps1'
+          $saveScript = [System.IO.Path]::Combine($env:RUNNER_TEMP, 'save-data.ps1')
           if (-not (Test-Path $saveScript)) { exit 0 }
 
-          # Lưu lần 1 khi user còn trong phiên để trích xuất toàn bộ HKCU Registry đang mở
           & $saveScript -Reason 'pre-logoff'$global:LASTEXITCODE = 0
 
-          # Đăng xuất user để Windows xả toàn bộ cache NTUSER.DAT và nhả khóa file SQLite/LevelDB của trình duyệt
           $u =$env:RDP_USER
           if ($u) {
               try {
@@ -888,10 +879,8 @@ jobs:
               } catch {}
           }
 
-          # Lưu lần 2 (chốt hạ toàn bộ ổ đĩa sạch sẽ lên GitHub Release + Git Branch)
           & $saveScript -Reason 'session-end-final'$global:LASTEXITCODE = 0
 
-          # Ngắt kết nối Tailscale gọn gàng nhưng KHÔNG xóa state để phiên mới giữ nguyên IP
           $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
           if (Test-Path $ts) { &$ts down 2>&1 | Out-Null }
           exit 0
