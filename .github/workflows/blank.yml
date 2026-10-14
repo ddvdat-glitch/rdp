@@ -90,8 +90,8 @@ jobs:
           $nowEpoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
           "JOB_START_EPOCH=$nowEpoch" >> "$env:GITHUB_ENV"
 
-          $total = 340
-          $display = '5 giờ 40 phút'
+          $total = 300
+          $display = '5 giờ 0 phút'
           if ("$env:INPUT_DURATION" -eq '1h') {
               $total = 60
               $display = '1 giờ'
@@ -118,17 +118,13 @@ jobs:
           }
           "MOUNT_LETTER=$dl" >> "$env:GITHUB_ENV"
 
-          $hostDrive = 'D:\'
-          $dDriveObj = Get-PSDrive -Name 'D' -ErrorAction SilentlyContinue
-          if (-not (Test-Path 'D:\') -or (-not $dDriveObj) -or ($dDriveObj.Free -lt 30GB)) {
-              $hostDrive = 'C:\'
-          }
+          $hostDrive = 'C:\'
           $vhdContainer = [System.IO.Path]::Combine("$hostDrive", 'AISTV-VHD-HOST')
           New-Item -ItemType Directory -Force -Path "$vhdContainer" | Out-Null
           $vhdFile = [System.IO.Path]::Combine("$vhdContainer", 'aistv-os-disk.vhdx')
 
           $sizeBytes = ([int64]"$env:VHD_SIZE_GB") * 1GB
-          Write-Host "💽 Đang dựng ổ đĩa riêng ${dl}:\ ($env:VHD_SIZE_GB GB Dynamic VHDX)..." -ForegroundColor Cyan
+          Write-Host "💽 Đang dựng ổ đĩa riêng ${dl}:\ trên ổ C ($env:VHD_SIZE_GB GB Dynamic VHDX)..." -ForegroundColor Cyan
           $mounted = $false
           try {
               if (-not (Test-Path "$vhdFile")) {
@@ -1023,22 +1019,19 @@ jobs:
           Write-Host "│ ⏰  Thời lượng   : $env:DISPLAY_TIME ($($start.ToString('HH:mm:ss')) -> $($end.ToString('HH:mm:ss')))" -ForegroundColor White
           Write-Host "├──────────────────────────────────────────────────────────┤" -ForegroundColor Cyan
           Write-Host "│ 💡 Toàn bộ ổ $($env:MOUNT_LETTER):\, Profile, App cài ở C:\ tự lưu thẳng vào GitHub" -ForegroundColor Yellow
-          Write-Host "│ 💡 Tự động backup định kỳ và đóng gói đầy đủ khi chuyển phiên" -ForegroundColor Yellow
+          Write-Host "│ 💡 Tự động đóng gói đầy đủ khi kết thúc phiên" -ForegroundColor Yellow
           Write-Host "└──────────────────────────────────────────────────────────┘" -ForegroundColor Cyan
           exit 0
 
       # ───────────────────────────────────────────────
-      # 10. DUY TRÌ PHIÊN + AUTOSAVE LÊN GITHUB
+      # 10. DUY TRÌ PHIÊN (KHÔNG CÒN SAO LƯU 20 PHÚT)
       # ───────────────────────────────────────────────
       - name: ⏳ DUY TRÌ PHIÊN LÀM VIỆC
         id: keepalive
         shell: pwsh
-        env:
-          AUTOSAVE_MINUTES: '20'
         run: |
           $tz         = [System.TimeZoneInfo]::FindSystemTimeZoneById('SE Asia Standard Time')
           $endEpoch   = [long]"$env:JOB_START_EPOCH" + ([long]"$env:TOTAL_MINUTES" * 60)
-          $saveScript = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'save-data.ps1')
           $endLocal   = [System.TimeZoneInfo]::ConvertTimeFromUtc([DateTimeOffset]::FromUnixTimeSeconds($endEpoch).UtcDateTime, $tz)
 
           Write-Host ""
@@ -1048,7 +1041,6 @@ jobs:
           Write-Host "🕐 Kết thúc dự kiến: $($endLocal.ToString('HH:mm:ss'))" -ForegroundColor Green
           Write-Host ""
 
-          $lastSave = Get-Date
           $lastLog  = (Get-Date).AddHours(-1)
           $warned   = $false
 
@@ -1079,12 +1071,6 @@ jobs:
                       msg * /TIME:290 "Phien RDP sap het gio (5 phut). He thong se tu dong dong goi toan bo o dia $($env:MOUNT_LETTER): luu len GitHub!"
                   } catch {}
                   $warned = $true
-              }
-
-              if ((((Get-Date) - $lastSave).TotalMinutes -ge [int]"$env:AUTOSAVE_MINUTES") -and $remain -gt 240) {
-                  & "$saveScript" -Reason 'autosave'
-                  $global:LASTEXITCODE = 0
-                  $lastSave = Get-Date
               }
 
               $sleepSec = [int][math]::Min(30, [math]::Max(1, $remain))
