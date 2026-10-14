@@ -119,7 +119,8 @@ jobs:
           "MOUNT_LETTER=$dl" >> "$env:GITHUB_ENV"
 
           $hostDrive = 'D:\'
-          if (-not (Test-Path 'D:\') -or ((Get-PSDrive D).Free -lt 30GB)) {
+          $dDriveObj = Get-PSDrive -Name 'D' -ErrorAction SilentlyContinue
+          if (-not (Test-Path 'D:\') -or (-not $dDriveObj) -or ($dDriveObj.Free -lt 30GB)) {
               $hostDrive = 'C:\'
           }
           $vhdContainer = [System.IO.Path]::Combine("$hostDrive", 'AISTV-VHD-HOST')
@@ -172,8 +173,8 @@ jobs:
               "$profileRoot",
               "${dl}:\Apps"
           )
-          foreach ($p in $initFolders) {
-              New-Item -ItemType Directory -Force -Path "$p" | Out-Null
+          $initFolders | ForEach-Object {
+              New-Item -ItemType Directory -Force -Path "$_" | Out-Null
           }
 
           $baseline = @{
@@ -220,7 +221,7 @@ jobs:
           $ErrorActionPreference = 'Continue'
 
           if ("$env:DATA_RESTORED" -ne '1' -or "$env:SESSION_READY" -ne '1') {
-              Write-Host '⚠️ Phiên chưa khởi tạo hoàn chỉnh, bỏ qua lưu để tránh ghi đè dữ liệu chưa gắn profile' -ForegroundColor Yellow
+              Write-Host '⚠️ Phiên chưa khởi tạo hoàn chỉnh, bỏ qua lưu để tránh ghi đè rỗng' -ForegroundColor Yellow
               exit 0
           }
 
@@ -401,9 +402,9 @@ jobs:
           try {
               $relJson = gh release view "$env:RELEASE_TAG" --repo "$env:GH_REPO" --json assets | ConvertFrom-Json
               $validNames = @($chunks.Name) + @('drive-manifest.json', 'init.txt')
-              foreach ($asset in $relJson.assets) {
-                  if ($asset.name -like 'aistv-drive.7z.*' -and ($asset.name -notin $validNames)) {
-                      gh release delete-asset "$env:RELEASE_TAG" $asset.name --repo "$env:GH_REPO" -y *> $null
+              @($relJson.assets) | ForEach-Object {
+                  if ($_.name -like 'aistv-drive.7z.*' -and ($_.name -notin $validNames)) {
+                      gh release delete-asset "$env:RELEASE_TAG" $_.name --repo "$env:GH_REPO" -y *> $null
                   }
               }
           } catch {}
@@ -552,9 +553,14 @@ jobs:
           $chocoCache = [System.IO.Path]::Combine("$osDir", 'choco-cache')
           $dl         = "$env:MOUNT_LETTER"
 
-          $folders = @("$appsDir", "$binDir", "$chocoCache", "${dl}:\Apps")
-          foreach ($d in$folders) {
-              New-Item -ItemType Directory -Force -Path "$d" | Out-Null
+          $folders = @(
+              "$appsDir",
+              "$binDir",
+              "$chocoCache",
+              "${dl}:\Apps"
+          )
+          $folders | ForEach-Object {
+              New-Item -ItemType Directory -Force -Path "$_" | Out-Null
           }
 
           if (-not (Test-Path 'C:\AISTV-Apps')) {
@@ -605,7 +611,8 @@ jobs:
               }}
           )
 
-          foreach ($item in $stepsList) {
+          $stepsList | ForEach-Object {
+              $item = $_
               try {
                   & $item.Script
                   Write-Host "│ ✅ $($item.Name)" -ForegroundColor Green
@@ -649,7 +656,8 @@ jobs:
               }}
           )
 
-          foreach ($tw in $tweaksList) {
+          $tweaksList | ForEach-Object {
+              $tw = $_
               try {
                   & $tw.Script
                   Write-Host "│ ✅ $($tw.Name)" -ForegroundColor Green
@@ -681,7 +689,8 @@ jobs:
           if ($allPkgs.Count -gt 0) {
               $allPkgs | Set-Content -Path "$pkgListFile" -Encoding UTF8
               $chocoCache = [System.IO.Path]::Combine("$env:SHARED_OS_DIR", 'choco-cache')
-              foreach ($pkg in $allPkgs) {
+              $allPkgs | ForEach-Object {
+                  $pkg = "$_"
                   Write-Host "📦 Cài $pkg (cache trên ổ riêng)..." -ForegroundColor Cyan
                   choco install "$pkg" -y --no-progress --limit-output --cache-location="$chocoCache"
                   if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) {
@@ -714,7 +723,7 @@ jobs:
               $numbers = '23456789'
               $all     = "$upper$lower$numbers"
               $chars   = @((Get-Pick "$upper"), (Get-Pick "$lower"), (Get-Pick "$numbers"))
-              for ($i = 1; $i -le 9; $i++) {
+              1..9 | ForEach-Object {
                   $chars += (Get-Pick "$all")
               }
               -join ($chars | Sort-Object { [System.Security.Cryptography.RandomNumberGenerator]::GetInt32([int]::MaxValue) })
