@@ -97,8 +97,7 @@ jobs:
               $total = 60
               $display = '1 giờ'
           } elseif ("$env:INPUT_DURATION" -eq '3h') {
-              $total = 180
-              $display = '3 giờ'
+              $total = 180$display = '3 giờ'
           }
           "TOTAL_MINUTES=$total" >> "$env:GITHUB_ENV"
           "DISPLAY_TIME=$display" >> "$env:GITHUB_ENV"
@@ -125,7 +124,7 @@ jobs:
 
           $sizeBytes = ([int64]"$env:VHD_SIZE_GB") * 1GB
           Write-Host "💽 Đang dựng ổ đĩa riêng ${dl}:\ ($env:VHD_SIZE_GB GB Dynamic VHDX)..." -ForegroundColor Cyan
-          $mounted = $false
+          $mounted =$false
           try {
               if (-not (Test-Path "$vhdFile")) {
                   New-VHD -Path "$vhdFile" -SizeBytes $sizeBytes -Dynamic |
@@ -138,7 +137,7 @@ jobs:
               }
               $null = Get-PSDrive -Name "$dl" -ErrorAction Stop
               if (Test-Path "${dl}:\") {
-                  $mounted = $true
+                  $mounted =$true
               }
           } catch {
               Write-Host "⚠️ Chuyển sang cơ chế Ổ Đĩa Ảo Kernel DOS Devices cho ${dl}:\..." -ForegroundColor Yellow
@@ -233,21 +232,31 @@ jobs:
 
           Write-Host "💾 [$Reason] Đang thu thập trạng thái Hệ Điều Hành, Registry, Profile & App..." -ForegroundColor Cyan
 
+          # 1. Xuất các nhánh Registry hệ thống & User
           $regBk = [System.IO.Path]::Combine("$osDir", 'Registry')
           New-Item -ItemType Directory -Force -Path "$regBk" | Out-Null
           reg export "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall" "$regBk\Uninstall-x64.reg" /y *> $null
           reg export "HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall" "$regBk\Uninstall-x86.reg" /y *> $null
           reg export "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "$regBk\System-Env.reg" /y *> $null
 
+          # 2. Đồng bộ Profile từ C:\Users\<user> sang X:\AISTV-SYSTEM\Users\<user> (bỏ các thư mục hệ thống gắn chặt SID)
           $u = "$env:RDP_USER"
           $profSrc = "$env:PROFILE_PATH"
           if ("$u" -and "$profSrc" -and (Test-Path "$profSrc")) {
               $profDst = [System.IO.Path]::Combine("$root", 'Users', "$u")
               New-Item -ItemType Directory -Force -Path "$profDst" | Out-Null
-              robocopy "$profSrc" "$profDst" /MIR /B /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP /XF NTUSER.DAT* ntuser.ini UsrClass.dat* /XD "$profSrc\AppData\Local\Temp" | Out-Null
+              robocopy "$profSrc" "$profDst" /MIR /B /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP `
+                  /XF NTUSER.DAT* ntuser.ini UsrClass.dat* `
+                  /XD "$profSrc\AppData\Local\Temp" `
+                      "$profSrc\AppData\Local\Packages" `
+                      "$profSrc\AppData\Local\ConnectedDevicesPlatform" `
+                      "$profSrc\AppData\Local\TileDataLayer" `
+                      "$profSrc\AppData\Local\Microsoft\Windows\Caches" `
+                      "$profSrc\AppData\Local\Microsoft\Windows\Explorer" | Out-Null
               $global:LASTEXITCODE = 0
           }
 
+          # 3. Gom các thư mục phần mềm cài thêm trong C:\Program Files, Program Files (x86), ProgramData sang ổ X:\
           if ("$env:BASELINE_FILE" -and (Test-Path "$env:BASELINE_FILE")) {
               try {
                   $base = Get-Content -Raw -Path "$env:BASELINE_FILE" | ConvertFrom-Json
@@ -281,6 +290,7 @@ jobs:
               } catch {}
           }
 
+          # 4. Đồng bộ mọi thư mục người dùng tạo thêm ở ngoài gốc ổ X:\ vào trong DriveRoot-Extra
           try {
               $extraRoot = [System.IO.Path]::Combine("$osDir", 'DriveRoot-Extra')
               New-Item -ItemType Directory -Force -Path "$extraRoot" | Out-Null
@@ -297,6 +307,7 @@ jobs:
           } catch {}
           $global:LASTEXITCODE = 0
 
+          # 5. Cập nhật file state JSON
           $stateFile = "$env:SHARED_STATE_FILE"
           if ("$stateFile" -and (Test-Path "$stateFile")) {
               try {
@@ -306,6 +317,7 @@ jobs:
               } catch {}
           }
 
+          # 6. Đẩy state & metadata lên nhánh Git (aistv-drive-state)
           $gitStage = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'git-state-sync')
           try {
               if (Test-Path "$gitStage") {
@@ -337,6 +349,7 @@ jobs:
               }
           }
 
+          # 7. Đóng gói toàn bộ ổ đĩa X:\AISTV-SYSTEM thành các mảnh 1900MB và đẩy lên GitHub Release
           $packDir = [System.IO.Path]::Combine("$env:RUNNER_TEMP", "gh-pack-$Reason")
           if (Test-Path "$packDir") {
               Remove-Item -Path "$packDir" -Recurse -Force -ErrorAction SilentlyContinue
@@ -402,7 +415,7 @@ jobs:
           '@
           $saveScriptPath = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'save-data.ps1')
           Set-Content -Path "$saveScriptPath" -Value $script -Encoding UTF8
-          Write-Host '✅ Đã tạo save-data.ps1' -ForegroundColor Green
+          Write-Host '✅ Đã tạo save-data.ps1 (chỉ chạy khi tắt qua Web/Desktop hoặc hết giờ)' -ForegroundColor Green
 
       # ───────────────────────────────────────────────
       # 3. KHÔI PHỤC TOÀN BỘ Ổ ĐĨA TỪ GITHUB RELEASE
@@ -454,7 +467,7 @@ jobs:
           $stateHit = Get-ChildItem -Path "$stage" -Recurse -Depth 6 -Filter 'rdp-session-state.json' -File -Force -ErrorAction SilentlyContinue | Select-Object -First 1
           $sourceRoot = "$stage"
           if ($stateHit) {
-              $sourceRoot =$stateHit.Directory.Parent.FullName
+              $sourceRoot = $stateHit.Directory.Parent.FullName
           }
 
           robocopy "$sourceRoot" "$env:SHARED_ROOT" /E /B /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
@@ -485,7 +498,14 @@ jobs:
                   Remove-Item -Path "$env:PROFILE_BACKUP" -Recurse -Force -ErrorAction SilentlyContinue
               }
               New-Item -ItemType Directory -Force -Path "$env:PROFILE_BACKUP" | Out-Null
-              robocopy "$oldProf" "$env:PROFILE_BACKUP" /E /B /XJ /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP /XF NTUSER.DAT* ntuser.ini UsrClass.dat* | Out-Null
+              robocopy "$oldProf" "$env:PROFILE_BACKUP" /E /B /XJ /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP `
+                  /XF NTUSER.DAT* ntuser.ini UsrClass.dat* `
+                  /XD "$oldProf\AppData\Local\Temp" `
+                      "$oldProf\AppData\Local\Packages" `
+                      "$oldProf\AppData\Local\ConnectedDevicesPlatform" `
+                      "$oldProf\AppData\Local\TileDataLayer" `
+                      "$oldProf\AppData\Local\Microsoft\Windows\Caches" `
+                      "$oldProf\AppData\Local\Microsoft\Windows\Explorer" | Out-Null
               $global:LASTEXITCODE = 0
               Write-Host "✅ Đã chuẩn bị dữ liệu profile cũ từ ổ ${dl}:\" -ForegroundColor Green
           } else {
@@ -495,7 +515,7 @@ jobs:
 
           $regBk = [System.IO.Path]::Combine("$env:SHARED_OS_DIR", 'Registry')
           if (Test-Path "$regBk") {
-              Get-ChildItem -Path "$regBk" -Filter '*.reg' | Where-Object { $_.Name -notlike 'User-*' } | ForEach-Object {
+              Get-ChildItem -Path "$regBk" -Filter '*.reg' \vert{} Where-Object { $_.Name -notlike 'User-*' } | ForEach-Object {
                   reg import $_.FullName *>$null
               }
               Write-Host "✅ Đã nạp lại Registry hệ thống & biến môi trường từ ổ riêng" -ForegroundColor Green
@@ -574,6 +594,7 @@ jobs:
           $stepsList = @(
               @{Name = "Bật Remote Desktop"; Script = {
                   Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
+                  Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Name 'fDenyTSConnections' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
               }},
               @{Name = "Cấu hình bảo mật RDP"; Script = {
                   $p = 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
@@ -626,6 +647,8 @@ jobs:
                   Set-ItemProperty -Path "$p" -Name 'MaxIdleTime' -Value 0 -Type DWord -Force
                   Set-ItemProperty -Path "$p" -Name 'MaxDisconnectionTime' -Value 0 -Type DWord -Force
                   Set-ItemProperty -Path "$p" -Name 'fResetBroken' -Value 0 -Type DWord -Force
+                  Set-ItemProperty -Path "$p" -Name 'UserAuthentication' -Value 0 -Type DWord -Force
+                  Set-ItemProperty -Path "$p" -Name 'SecurityLayer' -Value 0 -Type DWord -Force
               }},
               @{Name = "Tắt Windows Update (tránh tự cập nhật làm đổi bản Windows)"; Script = {
                   Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
@@ -684,7 +707,7 @@ jobs:
           exit 0
 
       # ───────────────────────────────────────────────
-      # 6. TẠO TÀI KHOẢN & ĐỒNG BỘ PROFILE VỚI Ổ X:\ (HOÀN TOÀN THUẦN POWERSHELL, KHÔNG DÙNG WMIC)
+      # 6. TẠO TÀI KHOẢN & ĐỒNG BỘ PROFILE VỚI Ổ X:\
       # ───────────────────────────────────────────────
       - name: 👤 TẠO USER RIÊNG & KHÔI PHỤC PROFILE
         shell: pwsh
@@ -726,15 +749,17 @@ jobs:
               Write-Host "│ ℹ️  Tạo mật khẩu mới" -ForegroundColor Blue
           }
 
+          # Tắt giới hạn mật khẩu & tắt tự động khóa tài khoản (Lockout)
           try {
-              & net accounts /maxpwage:unlimited *> $null
+              & net accounts /lockoutthreshold:0 /maxpwage:unlimited /minpwage:0 *> $null
               $secCfg = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'secpol.cfg')
               $secDb  = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'secpol.sdb')
               & secedit /export /cfg "$secCfg" *> $null
               if (Test-Path "$secCfg") {
                   (Get-Content -Raw -Path "$secCfg") `
                       -replace 'PasswordComplexity\s*=\s*1', 'PasswordComplexity = 0' `
-                      -replace 'MinimumPasswordLength\s*=\s*\d+', 'MinimumPasswordLength = 0' |
+                      -replace 'MinimumPasswordLength\s*=\s*\d+', 'MinimumPasswordLength = 0' `
+                      -replace 'LockoutBadCount\s*=\s*\d+', 'LockoutBadCount = 0' |
                       Set-Content -Path "$secCfg" -Encoding Unicode
                   & secedit /configure /db "$secDb" /cfg "$secCfg" /areas SECURITYPOLICY *> $null
                   Remove-Item -Path "$secCfg", "$secDb" -Force -ErrorAction SilentlyContinue
@@ -748,6 +773,15 @@ jobs:
               Write-Host "│ ✅ Đã xóa user cũ" -ForegroundColor Green
           }
 
+          # Dọn dẹp các nhánh ProfileList cũ bị trùng đường dẫn hoặc .bak tránh lỗi Temp Profile đá văng RDP
+          $profListKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList'
+          Get-ChildItem -Path "$profListKey" -ErrorAction SilentlyContinue | ForEach-Object {
+              $pImg = (Get-ItemProperty -Path$_.PSPath -Name 'ProfileImagePath' -ErrorAction SilentlyContinue).ProfileImagePath
+              if ($_.PSChildName -like '*.bak' -or ($pImg -and$pImg -ieq "C:\Users\$user")) {
+                  Remove-Item -Path $_.PSPath -Recurse -Force -ErrorAction SilentlyContinue
+              }
+          }
+
           try {
               New-LocalUser -Name "$user" -Password $securePass -AccountNeverExpires -PasswordNeverExpires -Description 'AI STV Persistent User' -ErrorAction Stop | Out-Null
           } catch {
@@ -755,14 +789,8 @@ jobs:
           }
 
           & net user "$user" "$matKhau" /active:yes /expires:never *> $null
-          
-          # Dùng CIM thay vì WMIC để đặt PasswordNeverExpires tương thích 100% với Windows 11
-          try {
-              Set-CimInstance -Query "SELECT * FROM Win32_UserAccount WHERE Name='$user'" -Property @{PasswordExpires=$false} -ErrorAction SilentlyContinue
-          } catch {
-              Set-LocalUser -Name "$user" -PasswordNeverExpires $true -ErrorAction SilentlyContinue
-          }
-
+          & net user "$user" /passwordchg:no *> $null
+          & wmic useraccount where "Name='$user'" set PasswordExpires=False *> $null
           Add-LocalGroupMember -Group 'Administrators' -Member "$user" -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group 'Remote Desktop Users' -Member "$user" -ErrorAction SilentlyContinue
           & net localgroup Administrators "$user" /add *> $null
@@ -790,10 +818,10 @@ jobs:
           }
           '@
 
-          $sid = $checkUser.SID.Value
+          $sid =$checkUser.SID.Value
           $sb  = New-Object System.Text.StringBuilder 260
           $hr  = [AistvProfile]::CreateProfile("$sid", "$user", $sb, 260)
-          $profPath = $sb.ToString()
+          $profPath =$sb.ToString()
           if ([string]::IsNullOrWhiteSpace("$profPath")) {
               $profPath = "C:\Users\$user"
           }
@@ -802,12 +830,21 @@ jobs:
           "PROFILE_PATH=$profPath" >> "$env:GITHUB_ENV"
 
           if (Test-Path "$env:PROFILE_BACKUP") {
-              robocopy "$env:PROFILE_BACKUP" "$profPath" /E /B /XJ /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP /XF NTUSER.DAT* ntuser.ini UsrClass.dat* | Out-Null
+              robocopy "$env:PROFILE_BACKUP" "$profPath" /E /B /XJ /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP `
+                  /XF NTUSER.DAT* ntuser.ini UsrClass.dat* `
+                  /XD "$env:PROFILE_BACKUP\AppData\Local\Temp" `
+                      "$env:PROFILE_BACKUP\AppData\Local\Packages" `
+                      "$env:PROFILE_BACKUP\AppData\Local\ConnectedDevicesPlatform" `
+                      "$env:PROFILE_BACKUP\AppData\Local\TileDataLayer" `
+                      "$env:PROFILE_BACKUP\AppData\Local\Microsoft\Windows\Caches" `
+                      "$env:PROFILE_BACKUP\AppData\Local\Microsoft\Windows\Explorer" | Out-Null
               $global:LASTEXITCODE = 0
               Remove-Item -Path "$env:PROFILE_BACKUP" -Recurse -Force -ErrorAction SilentlyContinue
+              & takeown /F "$profPath" /R /D Y *> $null
+              & icacls "$profPath" /setowner "${user}" /T /C /Q *> $null
               & icacls "$profPath" /grant "${user}:(OI)(CI)F" /T /C /Q *> $null
               $global:LASTEXITCODE = 0
-              Write-Host "│ ✅ Đã khôi phục dữ liệu profile (Desktop, Downloads, Documents, AppData...)" -ForegroundColor Green
+              Write-Host "│ ✅ Đã khôi phục dữ liệu profile & đồng bộ chuẩn SID Owner" -ForegroundColor Green
           } else {
               Write-Host "│ ℹ️  Chưa có dữ liệu profile cũ (phiên đầu tiên)" -ForegroundColor Cyan
           }
@@ -999,6 +1036,7 @@ jobs:
               New-Item -ItemType File -Path "$keep" -Force | Out-Null
           }
 
+          # Tạo Web Server quản lý tắt / khởi động lại / lưu dữ liệu an toàn
           $webScript = @'
           $ErrorActionPreference = 'Continue'
           $listener = [System.Net.HttpListener]::new()
@@ -1069,7 +1107,7 @@ jobs:
           <body>
               <div class="card">
                   <h1>🎛️ Bảng Điều Khiển AI-STV RDP</h1>
-                  <div class="sub">Quản lý Lưu ổ đĩa $($env:MOUNT_LETTER):\, Tắt máy & Chuyển phiên an toàn</div>
+                  <div class="sub">Quản lý Lưu ổ đĩa $($env:MOUNT_LETTER):\, Tắt máy & Chuyển phiên an toàn (Không bấm Cancel trên GitHub)</div>
                   $bannerHtml
                   <div class="info">
                       <div class="row"><span>🌐 IP Tailscale:</span><span class="val">$($env:TAILSCALE_IP):3389</span></div>
@@ -1089,14 +1127,14 @@ jobs:
                           <span>→</span>
                       </button>
                   </form>
-                  <form method="POST" action="/action/stop" onsubmit="return confirm('Hệ thống sẽ đăng xuất RDP, nén lưu 100% ổ đĩa lên GitHub rồi TẮT HẲN. Tiếp tục?');">
+                  <form method="POST" action="/action/stop" onsubmit="return confirm('Hệ thống sẽ đăng xuất RDP, nén lưu 100% ổ đĩa lên GitHub rồi TẮT HẲN (không bật phiên mới). Tiếp tục?');">
                       <button type="submit" class="btn-stop">
                           <span>🛑 Lưu Ổ Đĩa & Tắt Hẳn Server</span>
                           <span>→</span>
                       </button>
                   </form>
                   <div class="note">
-                      💡 <b>Lưu ý quan trọng:</b> Luôn tắt hoặc khởi động lại bằng nút trên trang web này để GitHub dành trọn vẹn thời gian nén và tải ổ đĩa lên Release.
+                      💡 <b>Lưu ý quan trọng:</b> Luôn tắt hoặc khởi động lại bằng nút trên trang web này để GitHub dành trọn vẹn thời gian nén và tải ổ đĩa lên Release. Không bấm nút "Cancel workflow" trên GitHub trừ khi muốn hủy khẩn cấp.
                   </div>
               </div>
           </body>
@@ -1154,7 +1192,7 @@ jobs:
       # ───────────────────────────────────────────────
       # 10. DUY TRÌ PHIÊN & LẮNG NGHE LỆNH TỪ WEB QUẢN LÝ
       # ───────────────────────────────────────────────
-      - name: ⏳ DUY TRÌ PHIÊN LÀM VIỆC (LẮNG NGHE WEB PANEL)
+      - name: ⏳ DUY TRÌ PHIÊN LÀM VIỆC (LẮNG NGHE WEB PANEL & BẢO VỆ USER)
         id: keepalive
         shell: pwsh
         run: |
@@ -1172,10 +1210,12 @@ jobs:
           Write-Host "🕐 Kết thúc dự kiến: $($endLocal.ToString('HH:mm:ss'))" -ForegroundColor Green
           Write-Host ""
 
-          $lastLog = (Get-Date).AddHours(-1)
-          $warned  = $false
+          $lastLog   = (Get-Date).AddHours(-1)
+          $lastGuard = (Get-Date).AddMinutes(-5)
+          $warned    = $false
 
           while ($true) {
+              # 1. Kiểm tra lệnh từ Web Quản Lý mỗi 2 giây
               if (Test-Path "$sigFile") {
                   $cmd = (Get-Content -Raw -Path "$sigFile" -ErrorAction SilentlyContinue).Trim()
                   Remove-Item -Path "$sigFile" -Force -ErrorAction SilentlyContinue
@@ -1202,6 +1242,52 @@ jobs:
                   break
               }
 
+              # 2. Watchdog kiểm tra & tự động hồi sinh User / RDP mỗi 10 giây nếu bị Windows/GitHub kill
+              if (((Get-Date) - $lastGuard).TotalSeconds -ge 10) {
+                  $uName  = "$env:RDP_USER"
+                  $uCheck = Get-LocalUser -Name "$uName" -ErrorAction SilentlyContinue
+                  if (-not $uCheck) {
+                      Write-Host "⚠️ [WATCHDOG] Phát hiện user $uName bị xóa! Đang khôi phục ngay lập tức..." -ForegroundColor Yellow
+                      $secPass = ConvertTo-SecureString "$env:RDP_PASS" -AsPlainText -Force
+                      try {
+                          New-LocalUser -Name "$uName" -Password $secPass -AccountNeverExpires -PasswordNeverExpires -ErrorAction Stop | Out-Null
+                      } catch {
+                          & net user "$uName" "$env:RDP_PASS" /add /y /expires:never *> $null
+                      }
+                      & net user "$uName" "$env:RDP_PASS" /active:yes /expires:never *> $null
+                      & net localgroup Administrators "$uName" /add *> $null
+                      & net localgroup "Remote Desktop Users" "$uName" /add *> $null
+                      if (Test-Path "$env:PROFILE_PATH") {
+                          & icacls "$env:PROFILE_PATH" /setowner "${uName}" /T /C /Q *> $null
+                          & icacls "$env:PROFILE_PATH" /grant "${uName}:(OI)(CI)F" /T /C /Q *> $null
+                      }
+                      $global:LASTEXITCODE = 0
+                  } else {
+                      if (-not $uCheck.Enabled) {
+                          Write-Host "⚠️ [WATCHDOG] Phát hiện user $uName bị vô hiệu hóa! Đang mở lại..." -ForegroundColor Yellow
+                          Enable-LocalUser -Name "$uName" -ErrorAction SilentlyContinue
+                          & net user "$uName" /active:yes /expires:never *> $null
+                      }
+                      & net localgroup Administrators "$uName" /add *> $null
+                      & net localgroup "Remote Desktop Users" "$uName" /add *> $null
+                  }
+
+                  # Giữ cấu hình RDP & NLA không bị Group Policy ghi đè
+                  Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0 -Force -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'SecurityLayer' -Value 0 -Force -ErrorAction SilentlyContinue
+
+                  $svc = Get-Service -Name TermService -ErrorAction SilentlyContinue
+                  if ($svc -and $svc.Status -ne 'Running') {
+                      Write-Host "🔄 [WATCHDOG] Khởi động lại TermService..." -ForegroundColor Yellow
+                      Start-Service -Name TermService -ErrorAction SilentlyContinue
+                      Start-Service -Name UmRdpService -ErrorAction SilentlyContinue
+                  }
+                  $global:LASTEXITCODE = 0
+                  $lastGuard = Get-Date
+              }
+
+              # 3. Ghi log định kỳ mỗi 5 phút
               if (((Get-Date) - $lastLog).TotalMinutes -ge 5) {
                   $svc  = Get-Service -Name TermService -ErrorAction SilentlyContinue
                   $conn = @(Get-NetTCPConnection -LocalPort 3389 -State Established -ErrorAction SilentlyContinue).Count
@@ -1209,12 +1295,6 @@ jobs:
                   $m = [math]::Floor(($remain % 3600) / 60)
                   Write-Host "[$(Get-Date -Format 'HH:mm:ss')] 📊 RDP: $($svc.Status) | Kết nối: $conn | Còn lại: ${h}h ${m}m | Web: http://$($env:TAILSCALE_IP):$($env:WEB_PORT)/" -ForegroundColor Blue
                   $lastLog = Get-Date
-              }
-
-              $svc = Get-Service -Name TermService -ErrorAction SilentlyContinue
-              if ($svc -and $svc.Status -ne 'Running') {
-                  Write-Host "🔄 Khởi động lại TermService..." -ForegroundColor Yellow
-                  Start-Service -Name TermService -ErrorAction SilentlyContinue
               }
 
               if (-not $warned -and $remain -le 300) {
