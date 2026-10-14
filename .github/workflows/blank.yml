@@ -233,14 +233,12 @@ jobs:
 
           Write-Host "💾 [$Reason] Đang thu thập trạng thái Hệ Điều Hành, Registry, Profile & App..." -ForegroundColor Cyan
 
-          # 1. Xuất các nhánh Registry hệ thống & User
           $regBk = [System.IO.Path]::Combine("$osDir", 'Registry')
           New-Item -ItemType Directory -Force -Path "$regBk" | Out-Null
           reg export "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall" "$regBk\Uninstall-x64.reg" /y *> $null
           reg export "HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall" "$regBk\Uninstall-x86.reg" /y *> $null
           reg export "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "$regBk\System-Env.reg" /y *> $null
 
-          # 2. Đồng bộ Profile từ C:\Users\<user> sang X:\AISTV-SYSTEM\Users\<user>
           $u = "$env:RDP_USER"
           $profSrc = "$env:PROFILE_PATH"
           if ("$u" -and "$profSrc" -and (Test-Path "$profSrc")) {
@@ -250,7 +248,6 @@ jobs:
               $global:LASTEXITCODE = 0
           }
 
-          # 3. Gom các thư mục phần mềm cài thêm trong C:\Program Files, Program Files (x86), ProgramData sang ổ X:\
           if ("$env:BASELINE_FILE" -and (Test-Path "$env:BASELINE_FILE")) {
               try {
                   $base = Get-Content -Raw -Path "$env:BASELINE_FILE" | ConvertFrom-Json
@@ -284,7 +281,6 @@ jobs:
               } catch {}
           }
 
-          # 4. Đồng bộ mọi thư mục người dùng tạo thêm ở ngoài gốc ổ X:\ vào trong DriveRoot-Extra
           try {
               $extraRoot = [System.IO.Path]::Combine("$osDir", 'DriveRoot-Extra')
               New-Item -ItemType Directory -Force -Path "$extraRoot" | Out-Null
@@ -301,7 +297,6 @@ jobs:
           } catch {}
           $global:LASTEXITCODE = 0
 
-          # 5. Cập nhật file state JSON
           $stateFile = "$env:SHARED_STATE_FILE"
           if ("$stateFile" -and (Test-Path "$stateFile")) {
               try {
@@ -311,7 +306,6 @@ jobs:
               } catch {}
           }
 
-          # 6. Đẩy state & metadata lên nhánh Git (aistv-drive-state)
           $gitStage = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'git-state-sync')
           try {
               if (Test-Path "$gitStage") {
@@ -343,7 +337,6 @@ jobs:
               }
           }
 
-          # 7. Đóng gói toàn bộ ổ đĩa X:\AISTV-SYSTEM thành các mảnh 1900MB và đẩy lên GitHub Release
           $packDir = [System.IO.Path]::Combine("$env:RUNNER_TEMP", "gh-pack-$Reason")
           if (Test-Path "$packDir") {
               Remove-Item -Path "$packDir" -Recurse -Force -ErrorAction SilentlyContinue
@@ -409,7 +402,7 @@ jobs:
           '@
           $saveScriptPath = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'save-data.ps1')
           Set-Content -Path "$saveScriptPath" -Value $script -Encoding UTF8
-          Write-Host '✅ Đã tạo save-data.ps1 (chỉ chạy khi tắt qua Web/Desktop hoặc hết giờ)' -ForegroundColor Green
+          Write-Host '✅ Đã tạo save-data.ps1' -ForegroundColor Green
 
       # ───────────────────────────────────────────────
       # 3. KHÔI PHỤC TOÀN BỘ Ổ ĐĨA TỪ GITHUB RELEASE
@@ -691,7 +684,7 @@ jobs:
           exit 0
 
       # ───────────────────────────────────────────────
-      # 6. TẠO TÀI KHOẢN & ĐỒNG BỘ PROFILE VỚI Ổ X:\
+      # 6. TẠO TÀI KHOẢN & ĐỒNG BỘ PROFILE VỚI Ổ X:\ (HOÀN TOÀN THUẦN POWERSHELL, KHÔNG DÙNG WMIC)
       # ───────────────────────────────────────────────
       - name: 👤 TẠO USER RIÊNG & KHÔI PHỤC PROFILE
         shell: pwsh
@@ -762,7 +755,14 @@ jobs:
           }
 
           & net user "$user" "$matKhau" /active:yes /expires:never *> $null
-          & wmic useraccount where "Name='$user'" set PasswordExpires=False *> $null
+          
+          # Dùng CIM thay vì WMIC để đặt PasswordNeverExpires tương thích 100% với Windows 11
+          try {
+              Set-CimInstance -Query "SELECT * FROM Win32_UserAccount WHERE Name='$user'" -Property @{PasswordExpires=$false} -ErrorAction SilentlyContinue
+          } catch {
+              Set-LocalUser -Name "$user" -PasswordNeverExpires $true -ErrorAction SilentlyContinue
+          }
+
           Add-LocalGroupMember -Group 'Administrators' -Member "$user" -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group 'Remote Desktop Users' -Member "$user" -ErrorAction SilentlyContinue
           & net localgroup Administrators "$user" /add *> $null
@@ -999,7 +999,6 @@ jobs:
               New-Item -ItemType File -Path "$keep" -Force | Out-Null
           }
 
-          # Tạo Web Server quản lý tắt / khởi động lại / lưu dữ liệu an toàn
           $webScript = @'
           $ErrorActionPreference = 'Continue'
           $listener = [System.Net.HttpListener]::new()
@@ -1070,7 +1069,7 @@ jobs:
           <body>
               <div class="card">
                   <h1>🎛️ Bảng Điều Khiển AI-STV RDP</h1>
-                  <div class="sub">Quản lý Lưu ổ đĩa $($env:MOUNT_LETTER):\, Tắt máy & Chuyển phiên an toàn (Không bấm Cancel trên GitHub)</div>
+                  <div class="sub">Quản lý Lưu ổ đĩa $($env:MOUNT_LETTER):\, Tắt máy & Chuyển phiên an toàn</div>
                   $bannerHtml
                   <div class="info">
                       <div class="row"><span>🌐 IP Tailscale:</span><span class="val">$($env:TAILSCALE_IP):3389</span></div>
@@ -1090,14 +1089,14 @@ jobs:
                           <span>→</span>
                       </button>
                   </form>
-                  <form method="POST" action="/action/stop" onsubmit="return confirm('Hệ thống sẽ đăng xuất RDP, nén lưu 100% ổ đĩa lên GitHub rồi TẮT HẲN (không bật phiên mới). Tiếp tục?');">
+                  <form method="POST" action="/action/stop" onsubmit="return confirm('Hệ thống sẽ đăng xuất RDP, nén lưu 100% ổ đĩa lên GitHub rồi TẮT HẲN. Tiếp tục?');">
                       <button type="submit" class="btn-stop">
                           <span>🛑 Lưu Ổ Đĩa & Tắt Hẳn Server</span>
                           <span>→</span>
                       </button>
                   </form>
                   <div class="note">
-                      💡 <b>Lưu ý quan trọng:</b> Luôn tắt hoặc khởi động lại bằng nút trên trang web này để GitHub dành trọn vẹn thời gian nén và tải ổ đĩa lên Release. Không bấm nút "Cancel workflow" trên GitHub trừ khi muốn hủy khẩn cấp.
+                      💡 <b>Lưu ý quan trọng:</b> Luôn tắt hoặc khởi động lại bằng nút trên trang web này để GitHub dành trọn vẹn thời gian nén và tải ổ đĩa lên Release.
                   </div>
               </div>
           </body>
@@ -1177,7 +1176,6 @@ jobs:
           $warned  = $false
 
           while ($true) {
-              # Kiểm tra lệnh từ Web Quản Lý mỗi 2 giây
               if (Test-Path "$sigFile") {
                   $cmd = (Get-Content -Raw -Path "$sigFile" -ErrorAction SilentlyContinue).Trim()
                   Remove-Item -Path "$sigFile" -Force -ErrorAction SilentlyContinue
