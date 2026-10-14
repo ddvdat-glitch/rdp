@@ -120,7 +120,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $vhdContainer | Out-Null
           $vhdFile = [System.IO.Path]::Combine($vhdContainer, 'aistv-os-disk.vhdx')
 
-          # Khởi tạo và Mount ổ đĩa riêng ngay lập tức để mọi lệnh phía sau đều nhận diện được ổ X:
+          # Khởi tạo và Mount ổ đĩa riêng ngay lập tức
           $sizeBytes = ([int64]$env:VHD_SIZE_GB) * 1GB
           Write-Host "💽 Đang dựng ổ đĩa riêng ${dl}:\ ($($env:VHD_SIZE_GB) GB Dynamic VHDX)..." -ForegroundColor Cyan
           $mounted = $false
@@ -151,10 +151,19 @@ jobs:
           $sharedStateFile  = "$sharedSessionDir\rdp-session-state.json"
           $profileRoot      = "$sharedRoot\Users"
           $profileBackup    = 'C:\aistv-profile-old'
+          $baselineFile     = [System.IO.Path]::Combine($env:RUNNER_TEMP, 'baseline-c-dirs.json')
 
-          foreach ($p in @($sharedRoot, $sharedSessionDir, $sharedDataDir, $sharedOsDir, $profileRoot)) {
+          foreach ($p in @($sharedRoot, $sharedSessionDir, $sharedDataDir, $sharedOsDir, $profileRoot, "${dl}:\Apps")) {
               New-Item -ItemType Directory -Force -Path $p | Out-Null
           }
+
+          # Chụp danh sách thư mục gốc của ổ C: trước khi khôi phục để tự động phát hiện mọi phần mềm cài mới vào ổ C:
+          $baseline = @{
+              PF64 = @(Get-ChildItem 'C:\Program Files' -Directory -Force -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+              PF86 = @(Get-ChildItem 'C:\Program Files (x86)' -Directory -Force -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+              PD   = @(Get-ChildItem 'C:\ProgramData' -Directory -Force -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+          }
+          $baseline | ConvertTo-Json -Depth 4 | Set-Content -Path $baselineFile -Encoding UTF8
 
           "VHD_CONTAINER=$vhdContainer" >> $env:GITHUB_ENV
           "VHD_FILE=$vhdFile" >> $env:GITHUB_ENV
@@ -165,6 +174,7 @@ jobs:
           "SHARED_STATE_FILE=$sharedStateFile" >> $env:GITHUB_ENV
           "PROFILE_ROOT=$profileRoot" >> $env:GITHUB_ENV
           "PROFILE_BACKUP=$profileBackup" >> $env:GITHUB_ENV
+          "BASELINE_FILE=$baselineFile" >> $env:GITHUB_ENV
 
           $build = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').CurrentBuild
           "OS_BUILD=$build" >> $env:GITHUB_ENV
@@ -197,8 +207,9 @@ jobs:
               exit 0
           }
 
-          $root = $env:SHARED_ROOT
+          $root  = $env:SHARED_ROOT
           $osDir = $env:SHARED_OS_DIR
+          $dl    = $env:MOUNT_LETTER
           if (-not $root -or -not (Test-Path $root)) {
               Write-Host 'ℹ️ Chưa thấy ổ đĩa chung, bỏ qua'
               exit 0
@@ -206,14 +217,13 @@ jobs:
 
           Write-Host "💾 [$Reason] Đang thu thập trạng thái Hệ Điều Hành, Registry, Services & App..." -ForegroundColor Cyan
 
-          # 1. Xuất toàn bộ nhánh Registry quan trọng của hệ thống & phần mềm đã cài
+          # 1. Xuất các nhánh Registry hệ thống & lưu ảnh chụp NTUSER.DAT sống bằng reg save
           $regBk = "$osDir\Registry"
           New-Item -ItemType Directory -Force -Path $regBk | Out-Null
           reg export "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall" "$regBk\Uninstall-x64.reg" /y *> $null
           reg export "HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall" "$regBk\Uninstall-x86.reg" /y *> $null
           reg export "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "$regBk\System-Env.reg" /y *> $null
 
-          # Xuất HKCU của user nếu đang load
           $u = $env:RDP_USER
           if ($u) {
               $userObj = Get-LocalUser -Name $u -ErrorAction SilentlyContinue
@@ -221,12 +231,58 @@ jobs:
                   $sid = $userObj.SID.Value
                   if (Test-Path "Registry::HKU\$sid") {
                       reg export "HKU\$sid\Environment" "$regBk\User-Env.reg" /y *> $null
-                      reg export "HKU\$sid\Software" "$regBk\User-Software.reg" /y *> $null
+                      if ($env:PROFILE_PATH -and (Test-Path $env:PROFILE_PATH)) {
+                          reg save "HKU\$sid" "$($env:PROFILE_PATH)\NTUSER.DAT.live" /y *> $null
+                      }
                   }
               }
           }
 
-          # 2. Đồng bộ cấu hình RustDesk, Tailscale State, Choco Lib & ProgramData quan trọng
+          # 2. Gom tất cả thư mục phần mềm người dùng cài thêm vào C:\Program Files, Program Files (x86), ProgramData sang ổ X:
+          if ($env:BASELINE_FILE -and (Test-Path $env:BASELINE_FILE)) {
+              try {
+                  $base = Get-Content -Raw $env:BASELINE_FILE | ConvertFrom-Json
+                  $skipNames = @('Tailscale', 'RustDesk', 'chocolatey', 'Package Cache', 'Microsoft', 'Windows Defender')
+
+                  $cOverlay = "$osDir\C-Drive-Overlay"
+                  New-Item -ItemType Directory -Force -Path "$cOverlay\PF64", "$cOverlay\PF86", "$cOverlay\PD" | Out-Null
+
+                  Get-ChildItem 'C:\Program Files' -Directory -Force -ErrorAction SilentlyContinue | Where-Object {
+                      $_.Name -notin $base.PF64 -and $_.Name -notin $skipNames
+                  } | ForEach-Object {
+                      robocopy $_.FullName "$cOverlay\PF64\$($_.Name)" /MIR /B /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+                  }
+
+                  Get-ChildItem 'C:\Program Files (x86)' -Directory -Force -ErrorAction SilentlyContinue | Where-Object {
+                      $_.Name -notin $base.PF86 -and $_.Name -notin $skipNames
+                  } | ForEach-Object {
+                      robocopy $_.FullName "$cOverlay\PF86\$($_.Name)" /MIR /B /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+                  }
+
+                  Get-ChildItem 'C:\ProgramData' -Directory -Force -ErrorAction SilentlyContinue | Where-Object {
+                      $_.Name -notin $base.PD -and $_.Name -notin $skipNames
+                  } | ForEach-Object {
+                      robocopy $_.FullName "$cOverlay\PD\$($_.Name)" /MIR /B /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+                  }
+              } catch {}
+          }
+
+          # 3. Đồng bộ mọi thư mục người dùng tạo thêm ở ngoài gốc ổ X:\ (ví dụ X:\Apps, X:\Games...) vào trong $osDir\DriveRoot-Extra
+          try {
+              $extraRoot = "$osDir\DriveRoot-Extra"
+              New-Item -ItemType Directory -Force -Path $extraRoot | Out-Null
+              Get-ChildItem "${dl}:\" -Force -ErrorAction SilentlyContinue | Where-Object {
+                  $_.Name -notin @('AISTV-SYSTEM', 'System Volume Information', '$RECYCLE.BIN', 'Pagefile.sys')
+              } | ForEach-Object {
+                  if ($_.PSIsContainer) {
+                      robocopy $_.FullName "$extraRoot\$($_.Name)" /MIR /B /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+                  } else {
+                      Copy-Item $_.FullName "$extraRoot\$($_.Name)" -Force -ErrorAction SilentlyContinue
+                  }
+              }
+          } catch {}
+
+          # 4. Đồng bộ cấu hình RustDesk & Tailscale State
           try {
               $rdCfg = 'C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config'
               if (Test-Path "$rdCfg\RustDesk.toml") {
@@ -240,15 +296,10 @@ jobs:
                   New-Item -ItemType Directory -Force -Path $tsBk | Out-Null
                   robocopy $tsData $tsBk /MIR /B /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
               }
-              if (Test-Path 'C:\ProgramData\chocolatey\lib') {
-                  $chocoBk = "$osDir\chocolatey-lib"
-                  New-Item -ItemType Directory -Force -Path $chocoBk | Out-Null
-                  robocopy 'C:\ProgramData\chocolatey\lib' $chocoBk /MIR /B /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
-              }
           } catch {}
           $global:LASTEXITCODE = 0
 
-          # 3. Cập nhật file state JSON
+          # 5. Cập nhật file state JSON
           $stateFile = $env:SHARED_STATE_FILE
           if ($stateFile -and (Test-Path $stateFile)) {
               try {
@@ -259,7 +310,7 @@ jobs:
               } catch {}
           }
 
-          # 4. Đẩy state & metadata trực tiếp vào nhánh Git (aistv-drive-state) trên repo
+          # 6. Đẩy state & metadata trực tiếp vào nhánh Git (aistv-drive-state) trên repo
           $gitStage = [System.IO.Path]::Combine($env:RUNNER_TEMP, 'git-state-sync')
           try {
               if (Test-Path $gitStage) { Remove-Item $gitStage -Recurse -Force -ErrorAction SilentlyContinue }
@@ -287,7 +338,7 @@ jobs:
               if ((Get-Location).Path -eq $gitStage) { Pop-Location }
           }
 
-          # 5. Đóng gói toàn bộ ổ đĩa riêng thành các phân mảnh 1900MB và đẩy thẳng lên GitHub Release
+          # 7. Đóng gói toàn bộ ổ đĩa riêng thành các phân mảnh 1900MB và đẩy thẳng lên GitHub Release
           $packDir = [System.IO.Path]::Combine($env:RUNNER_TEMP, "gh-pack-$Reason")
           if (Test-Path $packDir) { Remove-Item $packDir -Recurse -Force -ErrorAction SilentlyContinue }
           New-Item -ItemType Directory -Force -Path $packDir | Out-Null
@@ -295,8 +346,15 @@ jobs:
           $archiveBase = "$packDir\aistv-drive.7z"
           Write-Host "📦 [$Reason] Đang nén toàn bộ ổ đĩa $root (đa luồng, đọc cả file đang mở)..." -ForegroundColor Cyan
 
-          & 7z a -t7z -mx=1 -mmt=on -ssw -v1900m "$archiveBase" "$root\*" `-xr!"*\Pagefile.sys" `-xr!"*\System Volume Information" *> $null
+          Push-Location $root
+          $7zArgs = @(
+              'a', '-t7z', '-mx=1', '-mmt=on', '-ssw', '-v1900m',
+              $archiveBase, '*',
+              '-xr!Pagefile.sys', '-xr!swapfile.sys', '-xr!System Volume Information'
+          )
+          & 7z @7zArgs *> $null
           $7zCode = $LASTEXITCODE
+          Pop-Location
 
           $chunks = @(Get-ChildItem -Path $packDir -Filter 'aistv-drive.7z.*' | Sort-Object Name)
           if ($chunks.Count -eq 0) {
@@ -388,16 +446,44 @@ jobs:
           & 7z x "$firstChunk" "-o$stage" -y -mmt=on *> $null
           Remove-Item $dlDir -Recurse -Force -ErrorAction SilentlyContinue
 
+          # Tìm đúng gốc chứa thư mục sessions
+          $stateHit = Get-ChildItem $stage -Recurse -Depth 4 -Filter 'rdp-session-state.json' -File -Force -ErrorAction SilentlyContinue | Select-Object -First 1
+          $sourceRoot = if ($stateHit) { $stateHit.Directory.Parent.FullName } else { $stage }
+
           # Chuyển toàn bộ dữ liệu (trừ thư mục Users đang chờ nạp profile) vào ổ riêng
-          robocopy $stage $env:SHARED_ROOT /E /B /XJ /XD "$stage\Users" /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+          robocopy $sourceRoot $env:SHARED_ROOT /E /B /XJ /XD "$sourceRoot\Users" /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+          $global:LASTEXITCODE = 0
+
+          # Khôi phục các thư mục ngoài gốc ổ X:\ (nếu có)
+          $extraRoot = "$($env:SHARED_OS_DIR)\DriveRoot-Extra"
+          if (Test-Path $extraRoot) {
+              robocopy $extraRoot "${dl}:\" /E /B /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+              $global:LASTEXITCODE = 0
+          }
+
+          # Khôi phục các phần mềm đã cài vào C:\Program Files, Program Files (x86), ProgramData
+          $cOverlay = "$($env:SHARED_OS_DIR)\C-Drive-Overlay"
+          if (Test-Path "$cOverlay\PF64") {
+              robocopy "$cOverlay\PF64" 'C:\Program Files' /E /B /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+          }
+          if (Test-Path "$cOverlay\PF86") {
+              robocopy "$cOverlay\PF86" 'C:\Program Files (x86)' /E /B /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+          }
+          if (Test-Path "$cOverlay\PD") {
+              robocopy "$cOverlay\PD" 'C:\ProgramData' /E /B /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+          }
           $global:LASTEXITCODE = 0
 
           # Giữ riêng Profile cũ để bước tạo User nạp chuẩn SID + NTUSER.DAT
-          $oldProf = "$stage\Users\$($env:RDP_USER)"
+          $oldProf = "$sourceRoot\Users\$($env:RDP_USER)"
           if (Test-Path $oldProf) {
               if (Test-Path $env:PROFILE_BACKUP) { Remove-Item $env:PROFILE_BACKUP -Recurse -Force -ErrorAction SilentlyContinue }
               robocopy $oldProf $env:PROFILE_BACKUP /E /B /XJ /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
               $global:LASTEXITCODE = 0
+              # Nếu NTUSER.DAT bị khoá ở lần autosave trước mà có bản chụp NTUSER.DAT.live thì phục hồi
+              if (-not (Test-Path "$($env:PROFILE_BACKUP)\NTUSER.DAT") -and (Test-Path "$($env:PROFILE_BACKUP)\NTUSER.DAT.live")) {
+                  Copy-Item "$($env:PROFILE_BACKUP)\NTUSER.DAT.live" "$($env:PROFILE_BACKUP)\NTUSER.DAT" -Force
+              }
               Write-Host "✅ Đã bóc tách Profile cũ (gồm Desktop, AppData, Registry NTUSER.DAT)" -ForegroundColor Green
           }
           Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
@@ -409,14 +495,6 @@ jobs:
                   reg import $_.FullName *> $null
               }
               Write-Host "✅ Đã nạp lại Registry hệ thống & biến môi trường từ ổ riêng" -ForegroundColor Green
-          }
-
-          # Khôi phục Chocolatey lib nếu có
-          $chocoBk = "$($env:SHARED_OS_DIR)\chocolatey-lib"
-          if (Test-Path $chocoBk) {
-              New-Item -ItemType Directory -Force -Path 'C:\ProgramData\chocolatey\lib' | Out-Null
-              robocopy $chocoBk 'C:\ProgramData\chocolatey\lib' /E /B /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
-              $global:LASTEXITCODE = 0
           }
 
           if (Test-Path $env:SHARED_STATE_FILE) {
@@ -435,26 +513,24 @@ jobs:
           exit 0
 
       # ───────────────────────────────────────────────
-      # 4. ÁNH XẠ HỆ ĐIỀU HÀNH SANG Ổ RIÊNG (OS OVERLAY JUNCTIONS)
+      # 4. ÁNH XẠ HỆ ĐIỀU HÀNH SANG Ổ RIÊNG (KHÔNG LÀM HỎNG MSI HỆ THỐNG)
       # ───────────────────────────────────────────────
       - name: 🔗 Gắn kết thư mục Hệ Điều Hành & Phần Mềm sang ổ riêng
         shell: pwsh
         run: |
-          $osDir       = $env:SHARED_OS_DIR
-          $appsDir     = "$osDir\InstalledApps"
-          $appsDirX86  = "$osDir\InstalledApps-x86"
-          $progDataDir = "$osDir\ProgramData-Custom"
-          $binDir      = "$osDir\bin"
-          $chocoCache  = "$osDir\choco-cache"
+          $osDir      = $env:SHARED_OS_DIR
+          $appsDir    = "$osDir\InstalledApps"
+          $binDir     = "$osDir\bin"
+          $chocoCache = "$osDir\choco-cache"
+          $dl         = $env:MOUNT_LETTER
 
-          foreach ($d in @($appsDir, $appsDirX86, $progDataDir, $binDir, $chocoCache)) {
+          foreach ($d in @($appsDir, $binDir, $chocoCache, "${dl}:\Apps")) {
               New-Item -ItemType Directory -Force -Path $d | Out-Null
           }
 
-          $cvKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion'
-          Set-ItemProperty -Path $cvKey -Name 'ProgramFilesDir' -Value $appsDir -Force -ErrorAction SilentlyContinue
-          Set-ItemProperty -Path $cvKey -Name 'ProgramFilesDir (x86)' -Value $appsDirX86 -Force -ErrorAction SilentlyContinue
-
+          # Tạo Junction C:\AISTV-Apps trỏ thẳng sang ổ riêng mà KHÔNG ghi đè ProgramFilesDir của Windows
+          # (Giữ nguyên C:\Program Files để các Windows Service như Tailscale, RustDesk hoạt động 100% ổn định,
+          #  mọi app cài vào C:\Program Files vẫn được tự động quét & lưu sang ổ X: bởi cơ chế C-Drive-Overlay!)
           if (-not (Test-Path 'C:\AISTV-Apps')) {
               New-Item -ItemType Junction -Path 'C:\AISTV-Apps' -Target $appsDir -Force | Out-Null
           }
@@ -465,7 +541,7 @@ jobs:
               Set-ItemProperty -Path $sysEnv -Name 'Path' -Value "$binDir;$curPath" -Force
           }
 
-          Write-Host "✅ Đã chuyển hướng trình cài đặt Windows & PATH sang ổ đĩa riêng: $appsDir" -ForegroundColor Green
+          Write-Host "✅ Đã gắn kết C:\AISTV-Apps, ${dl}:\Apps & đồng bộ tự động C:\Program Files <-> ${dl}:\" -ForegroundColor Green
 
       # ───────────────────────────────────────────────
       # 5. CẤU HÌNH RDP & TỐI ƯU HỆ THỐNG
@@ -616,7 +692,7 @@ jobs:
           try {
               $ws = New-Object -ComObject WScript.Shell
               $lnk1 = $ws.CreateShortcut('C:\Users\Public\Desktop\O-DIA-RIENG-AISTV.lnk')
-              $lnk1.TargetPath = $env:SHARED_ROOT
+              $lnk1.TargetPath = "$($env:MOUNT_LETTER):\"
               $lnk1.Save()
 
               $lnk2 = $ws.CreateShortcut('C:\Users\Public\Desktop\KHO-DU-LIEU.lnk')
@@ -639,25 +715,55 @@ jobs:
           }
 
           $msiPath = "$env:TEMP\tailscale-premium.msi"
+          $ProgressPreference = 'SilentlyContinue'
           Invoke-WebRequest -Uri 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi' -OutFile $msiPath
-          Start-Process msiexec.exe -ArgumentList '/i', "`"$msiPath`"", '/quiet', '/norestart' -Wait
+          $proc = Start-Process msiexec.exe -ArgumentList '/i', "`"$msiPath`"", '/quiet', '/norestart' -Wait -PassThru
           Remove-Item $msiPath -Force -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 6
+          Write-Host "│ ✅ Đã chạy bộ cài Tailscale (mã: $($proc.ExitCode))" -ForegroundColor Green
 
+          # Tìm chính xác vị trí tailscale.exe
+          $tsCandidates = @(
+              'C:\Program Files\Tailscale\tailscale.exe',
+              'C:\Program Files (x86)\Tailscale\tailscale.exe',
+              "$($env:SHARED_OS_DIR)\InstalledApps\Tailscale\tailscale.exe"
+          )
+          $ts =$null
+          for ($w = 0; $w -lt 15 -and -not $ts; $w++) {
+              foreach ($c in$tsCandidates) {
+                  if (Test-Path $c) { $ts =$c; break }
+              }
+              if (-not $ts) {$cmd = Get-Command tailscale.exe -ErrorAction SilentlyContinue
+                  if ($cmd) { $ts =$cmd.Source; break }
+                  Start-Sleep -Seconds 2
+              }
+          }
+
+          if (-not $ts) {
+              Write-Host "❌ Không tìm thấy tailscale.exe sau khi cài đặt" -ForegroundColor Red
+              exit 1
+          }
+          "TAILSCALE_EXE=$ts" >> $env:GITHUB_ENV
+
+          # Khôi phục state Tailscale từ ổ riêng để giữ nguyên IP Tailscale của phiên trước
           $tsBk = "$($env:SHARED_OS_DIR)\Tailscale-State"
           $tsData = 'C:\ProgramData\Tailscale'
           if (Test-Path "$tsBk\server-state.conf") {
               Stop-Service Tailscale -Force -ErrorAction SilentlyContinue
+              Start-Sleep -Seconds 2
               New-Item -ItemType Directory -Force -Path $tsData | Out-Null
-              robocopy $tsBk $tsData /MIR /B /R:1 /W:1 /NFL /NDL /NJH /NJS /NP \vert{} Out-Null$global:LASTEXITCODE = 0
+              robocopy $tsBk $tsData /MIR /B /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null$global:LASTEXITCODE = 0
               Start-Service Tailscale -ErrorAction SilentlyContinue
               Start-Sleep -Seconds 5
-              Write-Host "✅ Đã nạp lại Node State Tailscale từ ổ riêng (Giữ nguyên IP)" -ForegroundColor Green
+              Write-Host "│ ✅ Đã nạp lại Node State Tailscale từ ổ riêng (Giữ nguyên IP)" -ForegroundColor Green
+          } else {
+              Start-Service Tailscale -ErrorAction SilentlyContinue
+              Start-Sleep -Seconds 5
           }
 
-          $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
           & $ts up "--authkey=$($env:TAILSCALE_AUTH_KEY)" "--hostname=aistv-persistent-os" --accept-routes --accept-dns --unattended
-          if ($LASTEXITCODE -ne 0) { &$ts up "--authkey=$($env:TAILSCALE_AUTH_KEY)" "--hostname=aistv-persistent-os" --accept-routes --accept-dns --reset
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "│ ⚠️  State cũ cần làm mới, đang kết nối lại với --reset..." -ForegroundColor Yellow
+              & $ts up "--authkey=$($env:TAILSCALE_AUTH_KEY)" "--hostname=aistv-persistent-os" --accept-routes --accept-dns --reset
           }
 
           $ip =$null
@@ -666,10 +772,14 @@ jobs:
               if ($out -match '^\d+\.\d+\.\d+\.\d+$') { $ip =$out; break }
               Start-Sleep -Seconds 3
           }
-          if (-not $ip) { Write-Host "❌ Không lấy được IP Tailscale" -ForegroundColor Red; exit 1 }
+          if (-not $ip) {
+              Write-Host "❌ Không lấy được IP Tailscale" -ForegroundColor Red
+              exit 1
+          }
 
           "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
           Write-Host "✅ Địa chỉ IP Tailscale: $ip" -ForegroundColor Green
+          exit 0
 
       # ───────────────────────────────────────────────
       # 8. DUCKDNS & RUSTDESK ID CỐ ĐỊNH
@@ -706,7 +816,7 @@ jobs:
           $svcCfg    = 'C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config'$bkCfg     = "$($env:SHARED_SESSION_DIR)\rustdesk-config"
           $guidFile  = "$($env:SHARED_SESSION_DIR)\rustdesk-machine-guid.txt"
           $idFile    = "$($env:SHARED_SESSION_DIR)\rustdesk-id.txt"
-          $rd        = "$env:ProgramFiles\RustDesk\rustdesk.exe"
+          $rd        = 'C:\Program Files\RustDesk\rustdesk.exe'
           $installer = [System.IO.Path]::Combine($env:RUNNER_TEMP, 'rustdesk-setup.exe')
 
           try {
@@ -726,7 +836,9 @@ jobs:
               Invoke-WebRequest -Uri $url -OutFile$installer
               $inst = Start-Process -FilePath$installer -ArgumentList '--silent-install' -PassThru
               [void]$inst.WaitForExit(60000)
-              Start-Sleep -Seconds 8
+
+              for ($i = 0; $i -lt 20 -and -not (Test-Path $rd);$i++) { Start-Sleep -Seconds 2 }
+              Start-Sleep -Seconds 6
 
               Stop-Service -Name 'RustDesk' -Force -ErrorAction SilentlyContinue
               Get-Process -Name 'rustdesk' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -735,12 +847,12 @@ jobs:
                   New-Item -ItemType Directory -Force -Path $svcCfg | Out-Null
                   robocopy $bkCfg $svcCfg /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP \vert{} Out-Null$global:LASTEXITCODE = 0
               }
-              Start-Service -Name 'RustDesk'
+              Start-Service -Name 'RustDesk' -ErrorAction SilentlyContinue
               Start-Sleep -Seconds 6
 
               $pw = if ($env:RUSTDESK_PASSWORD_SECRET) { $env:RUSTDESK_PASSWORD_SECRET } else {$env:RDP_PASS }
               $passText = if ($env:RUSTDESK_PASSWORD_SECRET) { '(secret RUSTDESK_PASSWORD)' } else { '(giống mật khẩu RDP)' }
-              if ($pw) {
+              if ($pw -and (Test-Path$rd)) {
                   $pp = Start-Process -FilePath$rd -ArgumentList @('--password', "`"$pw`"") -PassThru -WindowStyle Hidden
                   [void]$pp.WaitForExit(20000)
               }
@@ -755,8 +867,11 @@ jobs:
                   Set-Content -Path $idFile -Value$id -Encoding ASCII
                   "RUSTDESK_ID=$id" >> $env:GITHUB_ENV
                   "RUSTDESK_PASS_TEXT=$passText" >> $env:GITHUB_ENV
+                  Write-Host "✅ RustDesk ID cố định: $id" -ForegroundColor Green
               }
-          } catch {}
+          } catch {
+              Write-Host "⚠️ Bỏ qua lỗi phụ RustDesk: $($_.Exception.Message)" -ForegroundColor Yellow
+          }
           $global:LASTEXITCODE = 0
           exit 0
 
@@ -803,10 +918,10 @@ jobs:
           Write-Host "│ 🔐  Mật khẩu     : $passText" -ForegroundColor White
           Write-Host "│ 💽  Ổ đĩa riêng  : $($env:MOUNT_LETTER):\ ($env:SHARED_ROOT)" -ForegroundColor Green
           Write-Host "│ 👤  Profile gốc  : $env:PROFILE_PATH" -ForegroundColor Green
-          Write-Host "│ 📦  Thư mục App  : C:\AISTV-Apps -> $($env:SHARED_OS_DIR)\InstalledApps" -ForegroundColor Green
+          Write-Host "│ 📦  Thư mục App  : $($env:MOUNT_LETTER):\Apps & C:\Program Files (tự đồng bộ)" -ForegroundColor Green
           Write-Host "│ ⏰  Thời lượng   : $env:DISPLAY_TIME ($($start.ToString('HH:mm:ss')) -> $($end.ToString('HH:mm:ss')))" -ForegroundColor White
           Write-Host "├──────────────────────────────────────────────────────────┤" -ForegroundColor Cyan
-          Write-Host "│ 💡 Toàn bộ ổ $($env:MOUNT_LETTER):\, Profile, App, Registry tự lưu thẳng vào GitHub" -ForegroundColor Yellow
+          Write-Host "│ 💡 Toàn bộ ổ $($env:MOUNT_LETTER):\, Profile, App cài ở C:\ tự lưu thẳng vào GitHub" -ForegroundColor Yellow
           Write-Host "│ 💡 Không cần Restic/S3 ngoài - Tự động cắt mảnh & ghép khi chuyển phiên" -ForegroundColor Yellow
           Write-Host "└──────────────────────────────────────────────────────────┘" -ForegroundColor Cyan
 
@@ -881,7 +996,7 @@ jobs:
 
           & $saveScript -Reason 'session-end-final'$global:LASTEXITCODE = 0
 
-          $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          $ts = if ($env:TAILSCALE_EXE) {$env:TAILSCALE_EXE } else { 'C:\Program Files\Tailscale\tailscale.exe' }
           if (Test-Path $ts) { &$ts down 2>&1 | Out-Null }
           exit 0
 
@@ -900,7 +1015,10 @@ jobs:
           DDNS: ${{ inputs.enable_duckdns }}
           RD: ${{ inputs.enable_rustdesk }}
         run: |
-          $wf = [System.IO.Path]::GetFileName(($env:GITHUB_WORKFLOW_REF -split '@')[0])
+          $wf = [System.IO.Path]::GetFileName(($env:GITHUB_WORKFLOW_REF -split '@')[0])$optStr  = "$($env:OPT)".ToLower()
+          $ddnsStr = "$($env:DDNS)".ToLower()
+          $rdStr   = "$($env:RD)".ToLower()
+
           Write-Host "🚀 Đang khởi chạy phiên kế tiếp và nạp lại ổ đĩa $($env:MOUNT_LETTER):\ từ GitHub..." -ForegroundColor Cyan
           gh workflow run $wf --ref$env:GITHUB_REF_NAME `
               -f "duration=$($env:DURATION)" `
@@ -910,8 +1028,8 @@ jobs:
               -f "windows_image=$($env:WIN_IMAGE)" `
               -f "rdp_user=$($env:USER_IN)" `
               -f "choco_packages=$($env:PKGS)" `
-              -f "optimize_windows=$($env:OPT)" `
-              -f "enable_duckdns=$($env:DDNS)" `
-              -f "enable_rustdesk=$($env:RD)"
+              -f "optimize_windows=$optStr" `
+              -f "enable_duckdns=$ddnsStr" `
+              -f "enable_rustdesk=$rdStr"
           if ($LASTEXITCODE -ne 0) { throw 'Không kích hoạt được phiên mới' }
           Write-Host "✅ Đã chuyển giao ổ đĩa sang phiên mới thành công!" -ForegroundColor Green
