@@ -6,7 +6,7 @@ on:
       duration:
         description: '🕐 Thời gian sử dụng (tính từ lúc job bắt đầu)'
         required: false
-        default: '5h40m'
+        default: '5h00m'
         type: choice
         options:
           - '1h'
@@ -76,6 +76,7 @@ jobs:
       STATE_BRANCH: 'aistv-drive-state'
       DRIVE_LETTER: ${{ inputs.drive_letter }}
       VHD_SIZE_GB: ${{ inputs.vhd_size_gb }}
+      WEB_PORT: '8080'
 
     steps:
       # ───────────────────────────────────────────────
@@ -159,6 +160,7 @@ jobs:
           $profileStoreRoot = "$sharedRoot\Users"
           $profileBackup    = 'C:\aistv-profile-old'
           $baselineFile     = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'baseline-c-dirs.json')
+          $controlSignal    = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'aistv-control-action.txt')
 
           $initFolders = @(
               "$sharedRoot",
@@ -189,6 +191,7 @@ jobs:
           "PROFILE_ROOT=$profileStoreRoot" >> "$env:GITHUB_ENV"
           "PROFILE_BACKUP=$profileBackup" >> "$env:GITHUB_ENV"
           "BASELINE_FILE=$baselineFile" >> "$env:GITHUB_ENV"
+          "CONTROL_SIGNAL_FILE=$controlSignal" >> "$env:GITHUB_ENV"
 
           $build = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').CurrentBuild
           "OS_BUILD=$build" >> "$env:GITHUB_ENV"
@@ -204,7 +207,7 @@ jobs:
           Write-Host "✅ Đã mount thành công ổ đĩa riêng: ${dl}:\ ($sharedRoot)" -ForegroundColor Green
 
       # ───────────────────────────────────────────────
-      # 2. TẠO ENGINE ĐỒNG BỘ Ổ ĐĨA LÊN GITHUB (CHỈ CHẠY CUỐI PHIÊN)
+      # 2. TẠO ENGINE ĐỒNG BỘ Ổ ĐĨA LÊN GITHUB
       # ───────────────────────────────────────────────
       - name: 🧰 Tạo script đóng gói & đẩy toàn bộ ổ đĩa lên GitHub
         shell: pwsh
@@ -406,7 +409,7 @@ jobs:
           '@
           $saveScriptPath = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'save-data.ps1')
           Set-Content -Path "$saveScriptPath" -Value $script -Encoding UTF8
-          Write-Host '✅ Đã tạo save-data.ps1 (chỉ chạy khi tắt hoặc hết giờ)' -ForegroundColor Green
+          Write-Host '✅ Đã tạo save-data.ps1 (chỉ chạy khi tắt qua Web/Desktop hoặc hết giờ)' -ForegroundColor Green
 
       # ───────────────────────────────────────────────
       # 3. KHÔI PHỤC TOÀN BỘ Ổ ĐĨA TỪ GITHUB RELEASE
@@ -567,13 +570,13 @@ jobs:
           Write-Host "✅ Đã gắn kết C:\AISTV-Apps, ${dl}:\Apps & đồng bộ tự động C:\Program Files <-> ${dl}:\" -ForegroundColor Green
 
       # ───────────────────────────────────────────────
-      # 5. CẤU HÌNH RDP & TỐI ƯU WINDOWS
+      # 5. CẤU HÌNH RDP, MỞ PORT WEB QUẢN LÝ & TỐI ƯU WINDOWS
       # ───────────────────────────────────────────────
       - name: 🔧 CẤU HÌNH HỆ THỐNG
         shell: pwsh
         run: |
           Write-Host ""
-          Write-Host "🛠️  ĐANG CẤU HÌNH HỆ THỐNG RDP" -ForegroundColor Yellow
+          Write-Host "🛠️  ĐANG CẤU HÌNH HỆ THỐNG RDP & WEB PANEL" -ForegroundColor Yellow
 
           $stepsList = @(
               @{Name = "Bật Remote Desktop"; Script = {
@@ -584,10 +587,10 @@ jobs:
                   Set-ItemProperty -Path "$p" -Name 'UserAuthentication' -Value 0 -Force
                   Set-ItemProperty -Path "$p" -Name 'SecurityLayer' -Value 0 -Force
               }},
-              @{Name = "Mở port 3389 (chỉ cho dải Tailscale)"; Script = {
+              @{Name = "Mở port 3389 (RDP) & 8080 (Web Quản Lý) cho Tailscale"; Script = {
                   Remove-NetFirewallRule -DisplayName 'RDP-Premium' -ErrorAction SilentlyContinue
                   New-NetFirewallRule -DisplayName 'RDP-Premium' -Direction Inbound -Action Allow `
-                      -Protocol TCP -LocalPort 3389 -RemoteAddress '100.64.0.0/10' -Profile Any | Out-Null
+                      -Protocol TCP -LocalPort 3389,8080 -RemoteAddress '100.64.0.0/10' -Profile Any | Out-Null
               }},
               @{Name = "Khởi động dịch vụ"; Script = {
                   Set-Service -Name TermService -StartupType Automatic -ErrorAction SilentlyContinue
@@ -730,7 +733,6 @@ jobs:
               Write-Host "│ ℹ️  Tạo mật khẩu mới" -ForegroundColor Blue
           }
 
-          # Nới lỏng chính sách mật khẩu cục bộ để không bao giờ bị từ chối khi tạo user
           try {
               & net accounts /maxpwage:unlimited *> $null
               $secCfg = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'secpol.cfg')
@@ -778,7 +780,6 @@ jobs:
           "RDP_PASS=$matKhau" >> "$env:GITHUB_ENV"
           "RDP_PASS_SOURCE=$source" >> "$env:GITHUB_ENV"
 
-          # Giữ đường dẫn đăng nhập gốc tại C:\Users\<user> để dịch vụ RDP Windows không bao giờ lỗi nạp NTUSER.DAT
           Add-Type -TypeDefinition @'
           using System;
           using System.Text;
@@ -820,7 +821,12 @@ jobs:
               $lnk2 = $ws.CreateShortcut('C:\Users\Public\Desktop\AISTV-SHARED.lnk')
               $lnk2.TargetPath = "$env:SHARED_DATA_DIR"
               $lnk2.Save()
-              Write-Host "│ ✅ Đã tạo shortcut ổ đĩa riêng $($env:MOUNT_LETTER):\ & AISTV-SHARED trên Desktop" -ForegroundColor Green
+
+              $lnk3 = $ws.CreateShortcut('C:\Users\Public\Desktop\WEB-QUAN-LY-RDP.url')
+              $lnk3.TargetPath = "http://127.0.0.1:$($env:WEB_PORT)/"
+              $lnk3.Save()
+
+              Write-Host "│ ✅ Đã tạo shortcut ổ đĩa riêng, AISTV-SHARED & WEB-QUAN-LY-RDP trên Desktop" -ForegroundColor Green
           } catch {
               Write-Host "│ ⚠️  Không tạo được shortcut" -ForegroundColor Yellow
           }
@@ -958,9 +964,9 @@ jobs:
           exit 0
 
       # ───────────────────────────────────────────────
-      # 9. GHI STATE NỘI BỘ (KHÔNG UPLOAD ĐẦU PHIÊN) & HIỂN THỊ KẾT NỐI
+      # 9. KHỞI CHẠY WEB PANEL QUẢN LÝ & HIỂN THỊ KẾT NỐI
       # ───────────────────────────────────────────────
-      - name: 💾 Ghi thông số phiên vào ổ riêng X:\
+      - name: 🌐 Khởi chạy Web Quản Lý RDP (Port 8080) & Ghi State
         shell: pwsh
         env:
           WINDOWS_IMAGE: ${{ inputs.windows_image }}
@@ -992,7 +998,123 @@ jobs:
           if (-not (Test-Path "$keep")) {
               New-Item -ItemType File -Path "$keep" -Force | Out-Null
           }
-          Write-Host "✅ Đã ghi trạng thái phiên vào $stateFilePath (sẽ tự động sao lưu lên GitHub khi kết thúc phiên)" -ForegroundColor Green
+
+          # Tạo Web Server quản lý tắt / khởi động lại / lưu dữ liệu an toàn
+          $webScript = @'
+          $ErrorActionPreference = 'Continue'
+          $listener = [System.Net.HttpListener]::new()
+          $listener.Prefixes.Add("http://+:$($env:WEB_PORT)/")
+          $listener.Start()
+
+          $endEpoch = [long]"$env:JOB_START_EPOCH" + ([long]"$env:TOTAL_MINUTES" * 60)
+
+          while ($listener.IsListening) {
+              try {
+                  $ctx  = $listener.GetContext()
+                  $req  = $ctx.Request
+                  $resp = $ctx.Response
+                  $path = $req.Url.AbsolutePath.ToLower()
+
+                  $now    = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+                  $remain = [math]::Max(0, $endEpoch - $now)
+                  $h      = [math]::Floor($remain / 3600)
+                  $m      = [math]::Floor(($remain % 3600) / 60)
+                  $s      = $remain % 60
+
+                  $statusMsg = ''
+                  if ($req.HttpMethod -eq 'POST') {
+                      if ($path -eq '/action/save') {
+                          Set-Content -Path "$env:CONTROL_SIGNAL_FILE" -Value 'SAVE_NOW' -Encoding UTF8
+                          $statusMsg = '✅ Đã gửi lệnh LƯU NGAY! Kiểm tra log GitHub Actions (quá trình nén mất khoảng 20-40 giây, máy vẫn hoạt động bình thường).'
+                      } elseif ($path -eq '/action/restart') {
+                          Set-Content -Path "$env:CONTROL_SIGNAL_FILE" -Value 'RESTART_SESSION' -Encoding UTF8
+                          $statusMsg = '🔁 Đã gửi lệnh LƯU & KHỞI ĐỘNG PHIÊN MỚI! RDP sẽ tự đăng xuất sau vài giây để đóng gói ổ đĩa đẩy lên GitHub và bật phiên mới...'
+                      } elseif ($path -eq '/action/stop') {
+                          Set-Content -Path "$env:CONTROL_SIGNAL_FILE" -Value 'STOP_SESSION' -Encoding UTF8
+                          $statusMsg = '🛑 Đã gửi lệnh LƯU & TẮT HẲN SERVER! RDP sẽ tự đăng xuất sau vài giây để đóng gói toàn bộ ổ đĩa lên GitHub trước khi tắt...'
+                      }
+                  }
+
+                  $bannerHtml = ''
+                  if ($statusMsg) {
+                      $bannerHtml = "<div class='alert'>$statusMsg</div>"
+                  }
+
+                  $html = @"
+          <!DOCTYPE html>
+          <html lang="vi">
+          <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1">
+              <title>AI-STV RDP Control Panel</title>
+              <style>
+                  * { box-sizing: border-box; font-family: 'Segoe UI', system-ui, sans-serif; }
+                  body { background: #0f172a; color: #f8fafc; margin: 0; padding: 24px; display: flex; justify-content: center; }
+                  .card { max-width: 560px; width: 100%; background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.4); }
+                  h1 { margin: 0 0 8px 0; font-size: 22px; color: #38bdf8; }
+                  .sub { color: #94a3b8; font-size: 14px; margin-bottom: 20px; }
+                  .info { background: #0f172a; border-radius: 12px; padding: 16px; margin-bottom: 20px; border: 1px solid #1e293b; }
+                  .row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #1e293b; font-size: 14px; }
+                  .row:last-child { border-bottom: none; }
+                  .val { font-weight: 600; color: #4ade80; }
+                  .alert { background: #065f46; color: #ecfdf5; padding: 14px; border-radius: 10px; margin-bottom: 18px; font-size: 14px; line-height: 1.5; border: 1px solid #10b981; }
+                  form { margin-bottom: 12px; }
+                  button { width: 100%; padding: 14px 18px; border: none; border-radius: 10px; font-size: 15px; font-weight: 600; cursor: pointer; transition: opacity 0.15s; text-align: left; display: flex; align-items: center; justify-content: space-between; }
+                  button:hover { opacity: 0.9; }
+                  .btn-save { background: #0284c7; color: white; }
+                  .btn-restart { background: #d97706; color: white; }
+                  .btn-stop { background: #dc2626; color: white; }
+                  .note { font-size: 12px; color: #94a3b8; margin-top: 14px; line-height: 1.5; }
+              </style>
+          </head>
+          <body>
+              <div class="card">
+                  <h1>🎛️ Bảng Điều Khiển AI-STV RDP</h1>
+                  <div class="sub">Quản lý Lưu ổ đĩa $($env:MOUNT_LETTER):\, Tắt máy & Chuyển phiên an toàn (Không bấm Cancel trên GitHub)</div>
+                  $bannerHtml
+                  <div class="info">
+                      <div class="row"><span>🌐 IP Tailscale:</span><span class="val">$($env:TAILSCALE_IP):3389</span></div>
+                      <div class="row"><span>👤 Tài khoản RDP:</span><span class="val">$($env:RDP_USER)</span></div>
+                      <div class="row"><span>💽 Ổ đĩa lưu trữ:</span><span class="val">$($env:MOUNT_LETTER):\ ($($env:SHARED_ROOT))</span></div>
+                      <div class="row"><span>⏳ Thời gian còn lại:</span><span class="val">${h}h ${m}m ${s}s</span></div>
+                  </div>
+                  <form method="POST" action="/action/save">
+                      <button type="submit" class="btn-save">
+                          <span>💾 Lưu Dữ Liệu Ngay (Không tắt máy)</span>
+                          <span>→</span>
+                      </button>
+                  </form>
+                  <form method="POST" action="/action/restart" onsubmit="return confirm('Hệ thống sẽ đăng xuất RDP, nén lưu 100% ổ đĩa lên GitHub rồi tự bật phiên mới. Tiếp tục?');">
+                      <button type="submit" class="btn-restart">
+                          <span>🔁 Lưu Ổ Đĩa & Khởi Động Phiên Mới Ngay</span>
+                          <span>→</span>
+                      </button>
+                  </form>
+                  <form method="POST" action="/action/stop" onsubmit="return confirm('Hệ thống sẽ đăng xuất RDP, nén lưu 100% ổ đĩa lên GitHub rồi TẮT HẲN (không bật phiên mới). Tiếp tục?');">
+                      <button type="submit" class="btn-stop">
+                          <span>🛑 Lưu Ổ Đĩa & Tắt Hẳn Server</span>
+                          <span>→</span>
+                      </button>
+                  </form>
+                  <div class="note">
+                      💡 <b>Lưu ý quan trọng:</b> Luôn tắt hoặc khởi động lại bằng nút trên trang web này để GitHub dành trọn vẹn thời gian nén và tải ổ đĩa lên Release. Không bấm nút "Cancel workflow" trên GitHub trừ khi muốn hủy khẩn cấp.
+                  </div>
+              </div>
+          </body>
+          </html>
+          "@
+                  $buf = [System.Text.Encoding]::UTF8.GetBytes($html)
+                  $resp.ContentType = 'text/html; charset=utf-8'
+                  $resp.ContentLength64 = $buf.Length
+                  $resp.OutputStream.Write($buf, 0, $buf.Length)
+                  $resp.OutputStream.Close()
+              } catch {}
+          }
+          '@
+          $webScriptPath = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'web-panel.ps1')
+          Set-Content -Path "$webScriptPath" -Value $webScript -Encoding UTF8
+          Start-Process pwsh.exe -ArgumentList '-NoProfile', '-WindowStyle', 'Hidden', '-File', "`"$webScriptPath`""
+          Write-Host "✅ Đã khởi chạy Web Quản Lý tại: http://$($env:TAILSCALE_IP):$($env:WEB_PORT)/" -ForegroundColor Green
           exit 0
 
       - name: 🎉 THÔNG TIN KẾT NỐI
@@ -1011,9 +1133,10 @@ jobs:
           Write-Host "┌──────────────────────────────────────────────────────────┐" -ForegroundColor Cyan
           Write-Host "│              🎉 KẾT NỐI & Ổ ĐĨA GITHUB SẴN SÀNG!         │" -ForegroundColor Cyan
           Write-Host "├──────────────────────────────────────────────────────────┤" -ForegroundColor Cyan
-          Write-Host "│ 🌐  Địa chỉ      : $env:TAILSCALE_IP (Port: 3389)" -ForegroundColor White
+          Write-Host "│ 🌐  Địa chỉ RDP  : $env:TAILSCALE_IP (Port: 3389)" -ForegroundColor White
+          Write-Host "│ 🎛️  Web Quản Lý  : http://$($env:TAILSCALE_IP):$($env:WEB_PORT)/" -ForegroundColor Yellow
           if ("$env:DUCKDNS_HOST") {
-              Write-Host "│ 🦆  Tên miền     : $env:DUCKDNS_HOST" -ForegroundColor White
+              Write-Host "│ 🦆  Tên miền     : $env:DUCKDNS_HOST (Web: http://$($env:DUCKDNS_HOST):$($env:WEB_PORT)/)" -ForegroundColor White
           }
           Write-Host "│ 👤  Tài khoản    : $env:RDP_USER" -ForegroundColor White
           Write-Host "│ 🔐  Mật khẩu     : $passText" -ForegroundColor White
@@ -1024,25 +1147,29 @@ jobs:
           Write-Host "│ 📦  Thư mục App  : $($env:MOUNT_LETTER):\Apps & C:\Program Files (tự đồng bộ)" -ForegroundColor Green
           Write-Host "│ ⏰  Thời lượng   : $env:DISPLAY_TIME ($($start.ToString('HH:mm:ss')) -> $($end.ToString('HH:mm:ss')))" -ForegroundColor White
           Write-Host "├──────────────────────────────────────────────────────────┤" -ForegroundColor Cyan
-          Write-Host "│ 💡 Toàn bộ ổ $($env:MOUNT_LETTER):\, Profile, App cài ở C:\ tự lưu khi tắt/hết phiên" -ForegroundColor Yellow
+          Write-Host "│ 💡 Muốn TẮT hoặc ĐỔI PHIÊN: Mở http://$($env:TAILSCALE_IP):$($env:WEB_PORT)/" -ForegroundColor Yellow
+          Write-Host "│ 💡 Bấm nút trên Web để lưu trọn vẹn 100% trước khi đóng!" -ForegroundColor Yellow
           Write-Host "└──────────────────────────────────────────────────────────┘" -ForegroundColor Cyan
           exit 0
 
       # ───────────────────────────────────────────────
-      # 10. DUY TRÌ PHIÊN (KHÔNG SAO LƯU NGẦM 20 PHÚT)
+      # 10. DUY TRÌ PHIÊN & LẮNG NGHE LỆNH TỪ WEB QUẢN LÝ
       # ───────────────────────────────────────────────
-      - name: ⏳ DUY TRÌ PHIÊN LÀM VIỆC
+      - name: ⏳ DUY TRÌ PHIÊN LÀM VIỆC (LẮNG NGHE WEB PANEL)
         id: keepalive
         shell: pwsh
         run: |
-          $tz       = [System.TimeZoneInfo]::FindSystemTimeZoneById('SE Asia Standard Time')
-          $endEpoch = [long]"$env:JOB_START_EPOCH" + ([long]"$env:TOTAL_MINUTES" * 60)
-          $endLocal = [System.TimeZoneInfo]::ConvertTimeFromUtc([DateTimeOffset]::FromUnixTimeSeconds($endEpoch).UtcDateTime, $tz)
+          $tz         = [System.TimeZoneInfo]::FindSystemTimeZoneById('SE Asia Standard Time')
+          $endEpoch   = [long]"$env:JOB_START_EPOCH" + ([long]"$env:TOTAL_MINUTES" * 60)
+          $endLocal   = [System.TimeZoneInfo]::ConvertTimeFromUtc([DateTimeOffset]::FromUnixTimeSeconds($endEpoch).UtcDateTime, $tz)
+          $saveScript = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'save-data.ps1')
+          $sigFile    = "$env:CONTROL_SIGNAL_FILE"
 
           Write-Host ""
           Write-Host "🔄 BẮT ĐẦU DUY TRÌ PHIÊN LÀM VIỆC..." -ForegroundColor Yellow
-          Write-Host "🔗 Kết nối: $env:TAILSCALE_IP" -ForegroundColor Cyan
-          Write-Host "🗂️ Ổ đĩa riêng: $($env:MOUNT_LETTER):\ ($env:SHARED_DATA_DIR)" -ForegroundColor Cyan
+          Write-Host "🔗 Kết nối RDP : $env:TAILSCALE_IP:3389" -ForegroundColor Cyan
+          Write-Host "🎛️ Web Quản Lý : http://$($env:TAILSCALE_IP):$($env:WEB_PORT)/" -ForegroundColor Yellow
+          Write-Host "🗂️ Ổ đĩa riêng : $($env:MOUNT_LETTER):\ ($env:SHARED_DATA_DIR)" -ForegroundColor Cyan
           Write-Host "🕐 Kết thúc dự kiến: $($endLocal.ToString('HH:mm:ss'))" -ForegroundColor Green
           Write-Host ""
 
@@ -1050,9 +1177,30 @@ jobs:
           $warned  = $false
 
           while ($true) {
+              # Kiểm tra lệnh từ Web Quản Lý mỗi 2 giây
+              if (Test-Path "$sigFile") {
+                  $cmd = (Get-Content -Raw -Path "$sigFile" -ErrorAction SilentlyContinue).Trim()
+                  Remove-Item -Path "$sigFile" -Force -ErrorAction SilentlyContinue
+
+                  if ($cmd -eq 'SAVE_NOW') {
+                      Write-Host "💾 [WEB-PANEL] Nhận lệnh LƯU NGAY từ Web Quản Lý..." -ForegroundColor Cyan
+                      & "$saveScript" -Reason 'manual-web-save'
+                      $global:LASTEXITCODE = 0
+                  } elseif ($cmd -eq 'RESTART_SESSION') {
+                      Write-Host "🔁 [WEB-PANEL] Nhận lệnh LƯU & KHỞI ĐỘNG LẠI PHIÊN MỚI từ Web Quản Lý!" -ForegroundColor Yellow
+                      'FORCE_NEXT_SESSION=1' >> "$env:GITHUB_ENV"
+                      break
+                  } elseif ($cmd -eq 'STOP_SESSION') {
+                      Write-Host "🛑 [WEB-PANEL] Nhận lệnh LƯU & TẮT HẲN SERVER từ Web Quản Lý!" -ForegroundColor Red
+                      'FORCE_STOP_ONLY=1' >> "$env:GITHUB_ENV"
+                      break
+                  }
+              }
+
               $now    = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
               $remain = $endEpoch - $now
               if ($remain -le 0) {
+                  Write-Host "⏰ Đã hết thời gian phiên làm việc!" -ForegroundColor Yellow
                   break
               }
 
@@ -1061,7 +1209,7 @@ jobs:
                   $conn = @(Get-NetTCPConnection -LocalPort 3389 -State Established -ErrorAction SilentlyContinue).Count
                   $h = [math]::Floor($remain / 3600)
                   $m = [math]::Floor(($remain % 3600) / 60)
-                  Write-Host "[$(Get-Date -Format 'HH:mm:ss')] 📊 RDP: $($svc.Status) | Kết nối: $conn | Còn lại: ${h}h ${m}m" -ForegroundColor Blue
+                  Write-Host "[$(Get-Date -Format 'HH:mm:ss')] 📊 RDP: $($svc.Status) | Kết nối: $conn | Còn lại: ${h}h ${m}m | Web: http://$($env:TAILSCALE_IP):$($env:WEB_PORT)/" -ForegroundColor Blue
                   $lastLog = Get-Date
               }
 
@@ -1078,16 +1226,15 @@ jobs:
                   $warned = $true
               }
 
-              $sleepSec = [int][math]::Min(30, [math]::Max(1, $remain))
-              Start-Sleep -Seconds $sleepSec
+              Start-Sleep -Seconds 2
           }
 
           Write-Host ""
-          Write-Host "🎯 ĐÃ HẾT THỜI GIAN - TỰ ĐỘNG DỪNG VÀ LƯU Ổ ĐĨA!" -ForegroundColor Red
+          Write-Host "🎯 CHUYỂN SANG BƯỚC ĐÓNG GÓI & LƯU DỮ LIỆU AN TOÀN..." -ForegroundColor Green
           exit 0
 
       # ───────────────────────────────────────────────
-      # 11. LƯU DUY NHẤT KHI ẤN TẮT HOẶC HẾT PHIÊN
+      # 11. LƯU TOÀN BỘ Ổ ĐĨA CUỐI PHIÊN LÊN GITHUB
       # ───────────────────────────────────────────────
       - name: 💾 Lưu toàn bộ ổ đĩa cuối phiên lên GitHub
         if: always()
@@ -1173,7 +1320,7 @@ jobs:
       # 13. KÍCH HOẠT PHIÊN TIẾP THEO (GỌI LẠI Ổ ĐĨA)
       # ───────────────────────────────────────────────
       - name: 🔁 Kích hoạt phiên tiếp theo & Mở lại ổ đĩa
-        if: ${{ always() && inputs.auto_restart && steps.keepalive.outcome == 'success' }}
+        if: ${{ always() && steps.keepalive.outcome == 'success' && env.FORCE_STOP_ONLY != '1' && (inputs.auto_restart || env.FORCE_NEXT_SESSION == '1') }}
         shell: pwsh
         env:
           DURATION: ${{ inputs.duration }}
