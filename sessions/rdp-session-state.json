@@ -2,13 +2,13 @@
   "user": "AISTV-D",
   "sid": "S-1-5-21-1000861503-3182281758-1041194900-1003",
   "password": "tAFGzV8rSSKu^L",
-  "passwordSource": "generated",
+  "passwordSource": "restored",
   "windowsImage": "windows-2022",
   "osBuild": "20348",
   "driveLetter": "X",
-  "tailscaleIp": "100.123.15.109",
+  "tailscaleIp": "100.121.211.124",
   "durationMinutes": 300,
-  "startUtc": "2026-10-14T10:00:43.3865147Z",
-  "runId": "38546344381",
-  "lastUpdatedUtc": "2026-10-14T10:26:52.6447373Z"
+  "startUtc": "2026-10-14T10:34:03.9357359Z",
+  "runId": "38549785831",
+  "lastUpdatedUtc": "2026-10-14T10:56:24.6783883Z"
 }
