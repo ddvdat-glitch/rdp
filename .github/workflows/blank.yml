@@ -11,7 +11,7 @@ on:
         options:
           - '1h'
           - '3h'
-          - '5h40m'
+          - '5h00m'
       auto_restart:
         description: '🔁 Tự khởi động phiên mới sau khi hết giờ'
         required: false
@@ -90,8 +90,8 @@ jobs:
           $nowEpoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
           "JOB_START_EPOCH=$nowEpoch" >> "$env:GITHUB_ENV"
 
-          $total = 340
-          $display = '5 giờ 40 phút'
+          $total = 300
+          $display = '5 giờ 00 phút'
           if ("$env:INPUT_DURATION" -eq '1h') {
               $total = 60
               $display = '1 giờ'
