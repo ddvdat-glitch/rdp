@@ -1,0 +1,357 @@
+name: 🚀 BOT CUADAT RUNNER
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: '🕐 Thời gian chạy mỗi phiên (tối đa 5h30m)'
+        required: false
+        default: '5h30m'
+        type: choice
+        options:
+        - '1h'
+        - '3h'
+        - '5h30m'
+      port:
+        description: '📍 Cổng ứng dụng (PORT)'
+        required: false
+        default: '3000'
+        type: string
+      auto_restart:
+        description: '🔁 Tự chạy lại phiên mới khi hết giờ (chạy liên tục nhiều ngày)'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write   # cần để lưu data.json lên nhánh bot-data
+  actions: write    # cần để tự kích hoạt lại workflow
+
+# Chỉ cho 1 phiên chạy tại một thời điểm (tránh 2 bot chạy song song và ghi đè dữ liệu của nhau)
+concurrency:
+  group: bot-cuadat-runner
+  cancel-in-progress: false
+
+jobs:
+  Run-Bot:
+    runs-on: windows-latest
+    timeout-minutes: 340
+
+    env:
+      APP_PORT: ${{ inputs.port }}
+      REPO_URL: https://github.com/ddvdat-glitch/botcuadat.git
+      DISCORD_TOKEN: ${{ secrets.DISCORD_AUTH_KEY }}
+      ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+      DATA_FILE: data.json          # file dữ liệu của bot (nằm ở thư mục gốc của bot)
+      DATA_BRANCH: bot-data         # nhánh dùng để lưu dữ liệu
+      SAVE_EVERY_MINUTES: '5'       # lưu định kỳ mỗi X phút
+    steps:
+      # 0. GHI MỐC THỜI GIAN BẮT ĐẦU JOB (UTC epoch -> không bị lệch khi qua 00:00)
+      - name: ⏱️ Ghi mốc thời gian
+        run: |
+          "JOB_START=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" >> $env:GITHUB_ENV
+
+      # 1. CÀI NODE
+      - name: 🟢 Cài Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # 2. CLONE + INSTALL
+      - name: 📥 Clone & npm install
+        run: |
+          git clone $env:REPO_URL app
+          if ($LASTEXITCODE -ne 0) { throw "git clone thất bại" }
+          Set-Location app
+          npm install
+          if ($LASTEXITCODE -ne 0) { throw "npm install thất bại" }
+          Write-Host "✅ npm install xong" -ForegroundColor Green
+
+      # 2b. TẠO SCRIPT ĐỒNG BỘ DỮ LIỆU + KHÔI PHỤC DỮ LIỆU CŨ
+      - name: 💾 Khôi phục dữ liệu
+        run: |
+          @'
+          param([string]$Mode)
+          $ErrorActionPreference = 'Continue'
+
+          $file     = $env:DATA_FILE
+          $branch   = $env:DATA_BRANCH
+          $appDir   = Join-Path $env:GITHUB_WORKSPACE 'app'
+          $local    = Join-Path $appDir $file
+          $repoDir  = Join-Path $env:RUNNER_TEMP 'datarepo'
+          $hashFile = Join-Path $env:RUNNER_TEMP 'lasthash.txt'
+          $url      = "https://x-access-token:$($env:GH_TOKEN)@github.com/$($env:GITHUB_REPOSITORY).git"
+
+          # ================= KHÔI PHỤC =================
+          if ($Mode -eq 'restore') {
+              git ls-remote --exit-code --heads $url $branch *> $null
+              $code = $LASTEXITCODE
+
+              if ($code -eq 2) {
+                  Write-Host "ℹ️ Chưa có nhánh $branch (lần chạy đầu), dùng dữ liệu mặc định của bot"
+                  "DATA_READY=1" >> $env:GITHUB_ENV
+                  exit 0
+              }
+              if ($code -ne 0) {
+                  Write-Host "❌ Không kết nối được tới nhánh $branch (mã lỗi $code)"
+                  exit 1
+              }
+
+              if (Test-Path $repoDir) { Remove-Item $repoDir -Recurse -Force }
+              git -c core.autocrlf=false clone --branch $branch --single-branch --depth 1 $url $repoDir 2>&1 | Out-Null
+              if ($LASTEXITCODE -ne 0) { Write-Host "❌ Clone nhánh $branch thất bại"; exit 1 }
+
+              $src = Join-Path $repoDir $file
+              if (Test-Path $src) {
+                  node -e "JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'))" $src 2>$null
+                  if ($LASTEXITCODE -ne 0) {
+                      Write-Host "::error::$file trên nhánh $branch không đọc được (hỏng hoặc có BOM). Dừng để bot không ghi đè bằng dữ liệu mặc định."
+                      exit 1
+                  }
+                  Copy-Item $src $local -Force
+                  (Get-FileHash $local -Algorithm SHA256).Hash | Set-Content $hashFile
+                  Write-Host "✅ Đã khôi phục $file từ nhánh $branch"
+              } else {
+                  Write-Host "ℹ️ Nhánh $branch chưa có $file, dùng dữ liệu mặc định"
+              }
+              "DATA_READY=1" >> $env:GITHUB_ENV
+              exit 0
+          }
+
+          # ================= LƯU =================
+          if ($Mode -eq 'save') {
+              # Chưa khôi phục xong thì tuyệt đối không lưu (tránh ghi đè dữ liệu cũ bằng dữ liệu mặc định)
+              if ($env:DATA_READY -ne '1') { Write-Host '⚠️ Chưa khôi phục dữ liệu, bỏ qua bước lưu'; exit 0 }
+              if (-not (Test-Path $local)) { Write-Host "ℹ️ Không thấy $file, bỏ qua"; exit 0 }
+
+              # Kiểm tra JSON hợp lệ (tránh lưu file đang bị ghi dở)
+              node -e "JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'))" $local 2>$null
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Host "::warning::$file đang ghi dở hoặc không hợp lệ, bỏ qua lần lưu này"
+                  exit 0
+              }
+
+              $hash = (Get-FileHash $local -Algorithm SHA256).Hash
+              if ((Test-Path $hashFile) -and ((Get-Content $hashFile -Raw).Trim() -eq $hash)) {
+                  Write-Host 'ℹ️ Dữ liệu không đổi, bỏ qua'
+                  exit 0
+              }
+
+              # Tạo repo mới mỗi lần -> nhánh chỉ có đúng 1 commit, không phình lịch sử
+              if (Test-Path $repoDir) { Remove-Item $repoDir -Recurse -Force }
+              New-Item -ItemType Directory -Force -Path $repoDir | Out-Null
+              Copy-Item $local (Join-Path $repoDir $file) -Force
+
+              git -C $repoDir init -q
+              git -C $repoDir checkout -q -b $branch
+              git -C $repoDir config core.autocrlf false
+              git -C $repoDir config user.name  'bot-data'
+              git -C $repoDir config user.email 'bot-data@users.noreply.github.com'
+              git -C $repoDir add -A
+              git -C $repoDir commit -q -m "save $((Get-Date).ToUniversalTime().ToString('s'))Z"
+              git -C $repoDir remote add origin $url
+
+              $ok = $false
+              for ($try = 1; $try -le 3; $try++) {
+                  git -C $repoDir push -q --force origin $branch 2>&1 | Out-Null
+                  if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+                  Start-Sleep -Seconds 3
+              }
+
+              if ($ok) {
+                  $hash | Set-Content $hashFile
+                  Write-Host "💾 Đã lưu $file lên nhánh $branch"
+              } else {
+                  Write-Host '::warning::Lưu dữ liệu lên nhánh bot-data thất bại sau 3 lần thử'
+              }
+              exit 0
+          }
+          '@ | Set-Content -Path "$env:RUNNER_TEMP\sync.ps1" -Encoding UTF8
+
+          & "$env:RUNNER_TEMP\sync.ps1" restore
+          if ($LASTEXITCODE -ne 0) { throw "Khôi phục dữ liệu thất bại, dừng để tránh mất dữ liệu" }
+
+      # 3. TẠO .ENV TỪ .ENV.EXAMPLE + GHI TOKEN
+      - name: ⚙️ Cấu hình .env
+        run: |
+          Set-Location app
+
+          if ([string]::IsNullOrWhiteSpace($env:DISCORD_TOKEN)) {
+              throw "Secret DISCORD_AUTH_KEY đang trống! Vào Settings > Secrets and variables > Actions để thêm."
+          }
+
+          function Set-EnvVar($list, $key, $value) {
+              $pattern = '^\s*' + [regex]::Escape($key) + '\s*='
+              $idx = -1
+              for ($i = 0; $i -lt $list.Count; $i++) {
+                  if ($list[$i] -match $pattern) { $idx = $i; break }
+              }
+              if ($idx -ge 0) { $list[$idx] = "$key=$value" } else { $list.Add("$key=$value") }
+          }
+
+          $list = [System.Collections.Generic.List[string]]::new()
+          if (Test-Path .env.example) {
+              Get-Content .env.example | ForEach-Object { $list.Add($_) }
+          }
+
+          # Ghi đè nguyên dòng (không dùng regex replace nên token chứa ký tự đặc biệt vẫn an toàn)
+          Set-EnvVar $list 'DISCORD_TOKEN' $env:DISCORD_TOKEN
+          Set-EnvVar $list 'PORT' $env:APP_PORT
+
+          if (-not [string]::IsNullOrWhiteSpace($env:ADMIN_PASSWORD)) {
+              Set-EnvVar $list 'ADMIN_PASSWORD' $env:ADMIN_PASSWORD
+          } elseif (-not ($list -match '^\s*ADMIN_PASSWORD\s*=')) {
+              $list.Add('ADMIN_PASSWORD=2008')
+          }
+
+          # Nếu còn chỗ nào dùng placeholder 'BOT-token' thì thay luôn (thay chuỗi thuần)
+          for ($i = 0; $i -lt $list.Count; $i++) {
+              if ($list[$i].Contains('BOT-token')) {
+                  $list[$i] = $list[$i].Replace('BOT-token', $env:DISCORD_TOKEN)
+              }
+          }
+
+          # Ghi UTF-8 không BOM
+          [System.IO.File]::WriteAllLines((Join-Path $PWD '.env'), $list, [System.Text.UTF8Encoding]::new($false))
+
+          # Kiểm tra lại (không in giá trị)
+          if (-not (Select-String -Path .env -Pattern '^DISCORD_TOKEN=.+' -Quiet)) {
+              throw "Ghi DISCORD_TOKEN vào .env thất bại"
+          }
+          Write-Host "✅ Đã tạo .env, các biến hiện có:" -ForegroundColor Green
+          Get-Content .env | ForEach-Object {
+              if ($_ -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=') { Write-Host "   - $($Matches[1]) = ***" }
+          }
+
+      # 4. MỞ FIREWALL CHO CỔNG
+      - name: 🔓 Mở cổng firewall
+        run: |
+          netsh advfirewall firewall add rule name="BotApp-In" dir=in action=allow protocol=TCP localport=$env:APP_PORT profile=any
+
+      # 5. TAILSCALE
+      - name: 🌐 Thiết lập Tailscale
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          $msiPath = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile $msiPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$msiPath`"", "/quiet", "/norestart" -Wait
+          Start-Sleep -Seconds 10
+
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=bot-cuadat-$env:GITHUB_RUN_ID --accept-routes --reset
+
+          $ip = $null
+          for ($i = 0; $i -lt 20; $i++) {
+              $ip = (& "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 2>&1) | Select-Object -First 1
+              if ($ip -match '^\d+\.\d+\.\d+\.\d+$') { break }
+              Start-Sleep -Seconds 3
+          }
+          if ($ip -notmatch '^\d+\.\d+\.\d+\.\d+$') { $ip = "localhost" }
+          "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
+          Write-Host "✅ Tailscale IP: $ip" -ForegroundColor Green
+
+      # 6. CHẠY npm start + GIỮ PHIÊN + LƯU DỮ LIỆU ĐỊNH KỲ
+      - name: ▶️ npm start & duy trì
+        id: run
+        env:
+          PORT: ${{ inputs.port }}
+          DURATION: ${{ inputs.duration }}
+        run: |
+          # --- Đổi "5h30m" / "3h" / "1h" thành số phút (mặc định 330 nếu không đọc được) ---
+          $totalMinutes = 330
+          if ($env:DURATION -match '^\s*(?:(\d+)h)?\s*(?:(\d+)m)?\s*$') {
+              $h = if ($Matches[1]) { [int]$Matches[1] } else { 0 }
+              $m = if ($Matches[2]) { [int]$Matches[2] } else { 0 }
+              if (($h * 60 + $m) -gt 0) { $totalMinutes = $h * 60 + $m }
+          }
+
+          # --- Tính giờ kết thúc theo UTC từ lúc job bắt đầu (không lỗi khi qua nửa đêm) ---
+          # Tối đa 335 phút vì job timeout = 340 phút
+          $jobStart = [DateTimeOffset]::FromUnixTimeSeconds([long]$env:JOB_START)
+          $endTime  = $jobStart.AddMinutes([math]::Min($totalMinutes, 335))
+
+          # Hiển thị giờ Việt Nam kèm ngày
+          try   { $tz = [TimeZoneInfo]::FindSystemTimeZoneById('SE Asia Standard Time') }
+          catch { $tz = [TimeZoneInfo]::Utc }
+          function Format-Vn($t) { [TimeZoneInfo]::ConvertTime($t, $tz).ToString('dd/MM/yyyy HH:mm:ss') }
+
+          $appDir = Join-Path $PWD "app"
+          function Start-App {
+              Start-Process -FilePath "npm.cmd" -ArgumentList "start" `
+                  -WorkingDirectory $appDir `
+                  -RedirectStandardOutput "$env:TEMP\app.out.log" `
+                  -RedirectStandardError  "$env:TEMP\app.err.log" `
+                  -PassThru
+          }
+
+          $proc = Start-App
+          Start-Sleep -Seconds 8
+
+          Write-Host ""
+          Write-Host "┌────────────────────────────────────────┐" -ForegroundColor Cyan
+          Write-Host "│ 🎉 BOT ĐANG CHẠY" -ForegroundColor Cyan
+          Write-Host "│ 🌐 Truy cập: http://$($env:TAILSCALE_IP):$($env:APP_PORT)" -ForegroundColor White
+          Write-Host "│ ⏰ Kết thúc: $(Format-Vn $endTime) (giờ VN)" -ForegroundColor White
+          Write-Host "└────────────────────────────────────────┘" -ForegroundColor Cyan
+
+          $saveEvery = [int]$env:SAVE_EVERY_MINUTES
+          $lastLog  = [DateTimeOffset]::UtcNow
+          $lastSave = [DateTimeOffset]::UtcNow
+          while ([DateTimeOffset]::UtcNow -lt $endTime) {
+              # Tự khởi động lại nếu app chết
+              if ($proc.HasExited) {
+                  Write-Host "[$(Format-Vn ([DateTimeOffset]::UtcNow))] ⚠️ App dừng, khởi động lại..." -ForegroundColor Yellow
+                  $proc = Start-App
+              }
+
+              # In log app mỗi 60 giây
+              if (([DateTimeOffset]::UtcNow - $lastLog).TotalSeconds -ge 60) {
+                  Write-Host "----- log gần nhất -----" -ForegroundColor DarkGray
+                  Get-Content "$env:TEMP\app.out.log" -Tail 10 -ErrorAction SilentlyContinue
+                  Get-Content "$env:TEMP\app.err.log" -Tail 5  -ErrorAction SilentlyContinue
+                  $left = [math]::Floor(($endTime - [DateTimeOffset]::UtcNow).TotalMinutes)
+                  Write-Host "⏳ Còn khoảng $left phút" -ForegroundColor Blue
+                  $lastLog = [DateTimeOffset]::UtcNow
+              }
+
+              # Lưu dữ liệu định kỳ
+              if (([DateTimeOffset]::UtcNow - $lastSave).TotalMinutes -ge $saveEvery) {
+                  & "$env:RUNNER_TEMP\sync.ps1" save
+                  $lastSave = [DateTimeOffset]::UtcNow
+              }
+
+              Start-Sleep -Seconds 10
+          }
+
+          Write-Host "🎯 HẾT THỜI GIAN PHIÊN NÀY!" -ForegroundColor Red
+          exit 0
+
+      # 7. DỌN DẸP (dừng bot trước rồi mới lưu lần cuối để file không bị ghi dở)
+      - name: 🧹 Dọn dẹp
+        if: always()
+        run: |
+          Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+
+          if (Test-Path "$env:RUNNER_TEMP\sync.ps1") {
+              & "$env:RUNNER_TEMP\sync.ps1" save
+          }
+
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" down 2>$null
+          netsh advfirewall firewall delete rule name="BotApp-In" 2>$null
+          Write-Host "🎉 Dọn dẹp hoàn tất!" -ForegroundColor Green
+          exit 0
+
+      # 8. TỰ CHẠY LẠI PHIÊN MỚI (chỉ khi phiên vừa rồi chạy hết giờ bình thường, không phải bị hủy/lỗi)
+      - name: 🔁 Kích hoạt phiên tiếp theo
+        if: ${{ always() && inputs.auto_restart && steps.run.outcome == 'success' }}
+        env:
+          GH_REPO: ${{ github.repository }}
+          DURATION: ${{ inputs.duration }}
+        run: |
+          $wf = [System.IO.Path]::GetFileName(($env:GITHUB_WORKFLOW_REF -split '@')[0])
+          Write-Host "Chạy lại workflow: $wf (ref: $env:GITHUB_REF_NAME)"
+          gh workflow run $wf --ref $env:GITHUB_REF_NAME -f duration=$env:DURATION -f port=$env:APP_PORT -f auto_restart=true
+          if ($LASTEXITCODE -ne 0) { throw "Không kích hoạt được phiên mới" }
+          Write-Host "✅ Đã kích hoạt phiên tiếp theo" -ForegroundColor Green
