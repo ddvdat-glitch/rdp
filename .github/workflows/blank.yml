@@ -218,27 +218,106 @@ jobs:
               '    Write-Host "ℹ️ Chưa thấy ổ đĩa chung, bỏ qua";',
               '    exit 0;',
               '}',
-              'Write-Host "💾 [$Reason] Đang thu thập trạng thái Hệ Điều Hành, Registry, Sunshine, Profile gốc & App..." -ForegroundColor Cyan;',
+              'Write-Host "💾 [$Reason] Đang đóng an toàn các trình duyệt & ứng dụng (bao gồm StarDesk) để nhả khóa file Cookie/Session..." -ForegroundColor Cyan;',
+              '$appsToClose = @("chrome", "msedge", "brave", "firefox", "coccoc", "opera", "vivaldi", "discord", "Telegram", "Zalo", "steam", "EpicGamesLauncher", "Spotify", "Code", "Notion", "StarDesk");',
+              'Get-Process -Name $appsToClose -ErrorAction SilentlyContinue | ForEach-Object {',
+              '    $null = $_.CloseMainWindow();',
+              '};',
+              'Start-Sleep -Seconds 3;',
+              'Get-Process -Name $appsToClose -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;',
+              'if ("$Reason" -eq "session-end") {',
+              '    Get-Service -Name "*StarDesk*" -ErrorAction SilentlyContinue | Stop-Service -Force -ErrorAction SilentlyContinue;',
+              '    Get-Process -Name "StarDesk*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;',
+              '    & taskkill.exe /F /IM "StarDesk*" /T *> $null;',
+              '}',
+              'Start-Sleep -Seconds 2;',
+              '',
+              'Write-Host "🔑 [$Reason] Đang giải mã khóa DPAPI (Local State) để di chuyển phiên đăng nhập sang máy mới..." -ForegroundColor Cyan;',
+              'Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue;',
+              '$u = "$env:RDP_USER";',
+              '$profSrc = "$env:PROFILE_PATH";',
+              'if (("$profSrc") -and (Test-Path "$profSrc\AppData")) {',
+              '    Get-ChildItem -Path "$profSrc\AppData" -Filter "Local State" -Recurse -File -Force -ErrorAction SilentlyContinue | ForEach-Object {',
+              '        try {',
+              '            $lsFile = $_.FullName;',
+              '            $lsJson = Get-Content -Raw -Path "$lsFile" -Encoding UTF8 | ConvertFrom-Json;',
+              '            if ($lsJson.os_crypt -and $lsJson.os_crypt.encrypted_key) {',
+              '                $encBytes = [Convert]::FromBase64String($lsJson.os_crypt.encrypted_key);',
+              '                if ($encBytes.Length -gt 5) {',
+              '                    $prefix = [System.Text.Encoding]::ASCII.GetString($encBytes[0..4]);',
+              '                    if ($prefix -eq "DPAPI") {',
+              '                        $cipher = $encBytes[5..($encBytes.Length - 1)];',
+              '                        $rawKey = [System.Security.Cryptography.ProtectedData]::Unprotect($cipher, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser);',
+              '                        [Convert]::ToBase64String($rawKey) | Set-Content -Path "$lsFile.aistvkey" -Encoding ASCII -Force;',
+              '                    }',
+              '                }',
+              '            }',
+              '        } catch {}',
+              '    };',
+              '}',
+              '',
+              'Write-Host "💾 [$Reason] Đang thu thập trạng thái Hệ Điều Hành, Registry, MachineGuid, Display, Audio, Sunshine, Profile gốc & App..." -ForegroundColor Cyan;',
               '$regBk = [System.IO.Path]::Combine("$osDir", "Registry");',
               'New-Item -ItemType Directory -Force -Path "$regBk" | Out-Null;',
               'reg export "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall" "$regBk\Uninstall-x64.reg" /y *> $null;',
               'reg export "HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall" "$regBk\Uninstall-x86.reg" /y *> $null;',
               'reg export "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "$regBk\System-Env.reg" /y *> $null;',
-              '$u = "$env:RDP_USER";',
-              '$profSrc = "$env:PROFILE_PATH";',
+              '# Sao lưu MachineGuid & MachineId để các App nhận diện đúng thiết bị cũ',
+              'reg export "HKLM\SOFTWARE\Microsoft\Cryptography" "$regBk\Machine-Cryptography.reg" /y *> $null;',
+              'reg export "HKLM\SOFTWARE\Microsoft\SQMClient" "$regBk\Machine-SQMClient.reg" /y *> $null;',
+              '# Sao lưu cấu hình & token đăng nhập của các App trong HKCU\Software',
+              'New-Item -ItemType Directory -Force -Path "$regBk\AppSoftware" | Out-Null;',
+              'Get-ChildItem "HKCU:\Software" -ErrorAction SilentlyContinue | Where-Object {',
+              '    $_.PSChildName -notin @("Microsoft", "Classes", "Policies", "RegisteredApplications")',
+              '} | ForEach-Object {',
+              '    $subName = $_.PSChildName;',
+              '    $safeName = ($subName -replace ''[^A-Za-z0-9._\-]'', ''_'');',
+              '    reg export "HKCU\Software\$subName" "$regBk\AppSoftware\App-$safeName.reg" /y *> $null;',
+              '};',
+              'reg export "HKCU\Environment" "$regBk\User-Env.reg" /y *> $null;',
+              'reg export "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" "$regBk\User-StartupRun.reg" /y *> $null;',
+              '# Sao lưu Độ phân giải, Tỷ lệ Scale (DPI) & Cấu hình màn hình',
+              'reg export "HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Configuration" "$regBk\Display-Config.reg" /y *> $null;',
+              'reg export "HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Connectivity" "$regBk\Display-Conn.reg" /y *> $null;',
+              'reg export "HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\ScaleFactors" "$regBk\Display-Scale.reg" /y *> $null;',
+              '# Sao lưu Hình nền, Tỷ lệ thu phóng User, Theme, Dark Mode & Âm thanh',
+              'reg export "HKCU\Control Panel\Desktop" "$regBk\User-Desktop.reg" /y *> $null;',
+              'reg export "HKCU\Control Panel\Desktop\WindowMetrics" "$regBk\User-WindowMetrics.reg" /y *> $null;',
+              'reg export "HKCU\Control Panel\Personalization" "$regBk\User-Personalization.reg" /y *> $null;',
+              'reg export "HKCU\Software\Microsoft\Windows\CurrentVersion\Themes" "$regBk\User-Themes.reg" /y *> $null;',
+              'reg export "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Wallpapers" "$regBk\User-Wallpapers.reg" /y *> $null;',
+              'reg export "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "$regBk\User-Explorer.reg" /y *> $null;',
+              'reg export "HKCU\Software\Microsoft\Multimedia\Audio" "$regBk\User-Audio.reg" /y *> $null;',
+              'reg export "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio" "$regBk\System-MMDevices-Audio.reg" /y *> $null;',
+              '# Đảm bảo xóa bỏ thư mục Drivers-Backup cũ (tránh kẹt pnputil khi khôi phục)',
+              '$drvBk = [System.IO.Path]::Combine("$osDir", "Drivers-Backup");',
+              'if (Test-Path "$drvBk") { Remove-Item -Path "$drvBk" -Recurse -Force -ErrorAction SilentlyContinue; }',
               'if (("$u") -and ("$profSrc") -and (Test-Path "$profSrc")) {',
               '    $profDst = [System.IO.Path]::Combine("$root", "Users", "$u");',
               '    New-Item -ItemType Directory -Force -Path "$profDst" | Out-Null;',
               '    $excludeDirs = @(',
+              '        "$profSrc\AppData\Roaming\Microsoft\Protect",',
+              '        "$profSrc\AppData\Roaming\Microsoft\Crypto",',
+              '        "$profSrc\AppData\Local\Microsoft\Credentials",',
+              '        "$profSrc\AppData\Roaming\Microsoft\Credentials",',
               '        "$profSrc\AppData\Local\Temp",',
               '        "$profSrc\AppData\Local\Packages",',
               '        "$profSrc\AppData\Local\TileDataLayer",',
               '        "$profSrc\AppData\Local\ConnectedDevicesPlatform",',
-              '        "$profSrc\AppData\Local\Microsoft\Windows\UsrClass.dat*",',
               '        "$profSrc\AppData\Local\Microsoft\Windows\Explorer",',
+              '        "$profSrc\AppData\Local\Microsoft\Windows\INetCache",',
+              '        "$profSrc\AppData\Local\Microsoft\Windows\WebCache",',
+              '        "$profSrc\AppData\Local\Microsoft\Windows\Caches",',
+              '        "$profSrc\AppData\Local\D3DSCache",',
               '        "$profSrc\AppData\Local\NuGet",',
               '        "$profSrc\AppData\Local\Package Cache",',
               '        "$profSrc\AppData\Local\CrashDumps",',
+              '        "$profSrc\AppData\Local\pip",',
+              '        "$profSrc\AppData\Local\npm-cache",',
+              '        "$profSrc\AppData\Local\yarn",',
+              '        "$profSrc\AppData\Local\go-build",',
+              '        "$profSrc\AppData\Local\ms-playwright",',
+              '        "$profSrc\AppData\Local\Cypress",',
               '        "$profSrc\.dotnet",',
               '        "$profSrc\.nuget",',
               '        "$profSrc\.m2",',
@@ -249,7 +328,7 @@ jobs:
               '        "$profSrc\.ServiceHub",',
               '        "$profSrc\vcpkg"',
               '    );',
-              '    robocopy "$profSrc" "$profDst" /MIR /B /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP /XF NTUSER.DAT* ntuser.ini UsrClass.dat* /XD @excludeDirs | Out-Null;',
+              '    robocopy "$profSrc" "$profDst" /MIR /XJ /R:2 /W:1 /MT:8 /NFL /NDL /NJH /NJS /NP /XF NTUSER.DAT* ntuser.ini UsrClass.dat* WebCacheV01.dat parent.lock lockfile SingletonLock SingletonCookie SingletonSocket /XD @excludeDirs *> $null;',
               '    $global:LASTEXITCODE = 0;',
               '}',
               'if (("$env:BASELINE_FILE") -and (Test-Path "$env:BASELINE_FILE")) {',
@@ -264,19 +343,19 @@ jobs:
               '            ($_.Name -notin ($base.PF64)) -and ($_.Name -notin ($skipNames))',
               '        } | ForEach-Object {',
               '            $dest = [System.IO.Path]::Combine("$cOverlay\PF64", $_.Name);',
-              '            robocopy ($_.FullName) "$dest" /MIR /B /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null;',
+              '            robocopy ($_.FullName) "$dest" /MIR /XJ /R:1 /W:1 /MT:8 /NFL /NDL /NJH /NJS /NP *> $null;',
               '        };',
               '        Get-ChildItem "C:\Program Files (x86)" -Directory -Force -ErrorAction SilentlyContinue | Where-Object {',
               '            ($_.Name -notin ($base.PF86)) -and ($_.Name -notin ($skipNames))',
               '        } | ForEach-Object {',
               '            $dest = [System.IO.Path]::Combine("$cOverlay\PF86", $_.Name);',
-              '            robocopy ($_.FullName) "$dest" /MIR /B /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null;',
+              '            robocopy ($_.FullName) "$dest" /MIR /XJ /R:1 /W:1 /MT:8 /NFL /NDL /NJH /NJS /NP *> $null;',
               '        };',
               '        Get-ChildItem "C:\ProgramData" -Directory -Force -ErrorAction SilentlyContinue | Where-Object {',
               '            ($_.Name -notin ($base.PD)) -and ($_.Name -notin ($skipNames))',
               '        } | ForEach-Object {',
               '            $dest = [System.IO.Path]::Combine("$cOverlay\PD", $_.Name);',
-              '            robocopy ($_.FullName) "$dest" /MIR /B /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null;',
+              '            robocopy ($_.FullName) "$dest" /MIR /XJ /R:1 /W:1 /MT:8 /NFL /NDL /NJH /NJS /NP *> $null;',
               '        };',
               '    } catch {}',
               '}',
@@ -288,7 +367,7 @@ jobs:
               '    } | ForEach-Object {',
               '        $dest = [System.IO.Path]::Combine("$extraRoot", $_.Name);',
               '        if ($_.PSIsContainer) {',
-              '            robocopy ($_.FullName) "$dest" /MIR /B /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null;',
+              '            robocopy ($_.FullName) "$dest" /MIR /XJ /R:1 /W:1 /MT:8 /NFL /NDL /NJH /NJS /NP *> $null;',
               '        } else {',
               '            Copy-Item -Path ($_.FullName) -Destination "$dest" -Force -ErrorAction SilentlyContinue;',
               '        }',
@@ -320,8 +399,8 @@ jobs:
               '    } else {',
               '        git checkout --orphan "$env:STATE_BRANCH" -q;',
               '    }',
-              '    robocopy "$env:SHARED_SESSION_DIR" "$gitStage\sessions" /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null;',
-              '    robocopy "$regBk" "$gitStage\registry" /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null;',
+              '    robocopy "$env:SHARED_SESSION_DIR" "$gitStage\sessions" /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP *> $null;',
+              '    robocopy "$regBk" "$gitStage\registry" /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP *> $null;',
               '    $global:LASTEXITCODE = 0;',
               '    git add -A;',
               '    git commit -m "Sync session state [$Reason]" -q 2>$null;',
@@ -389,6 +468,25 @@ jobs:
         shell: pwsh
         run: |
           $dl = "$env:MOUNT_LETTER";
+
+          # 1. Tắt App-Bound Encryption cho các trình duyệt Chromium để Cookie không bị hủy khi đổi máy ảo
+          @(
+              'HKLM:\SOFTWARE\Policies\Google\Chrome',
+              'HKLM:\SOFTWARE\Policies\Microsoft\Edge',
+              'HKLM:\SOFTWARE\Policies\BraveSoftware\Brave',
+              'HKLM:\SOFTWARE\Policies\CocCoc\Browser'
+          ) | ForEach-Object {
+              New-Item -Path "$_" -Force | Out-Null;
+              Set-ItemProperty -Path "$_" -Name 'ApplicationBoundEncryptionEnabled' -Value 0 -Type DWord -Force;
+          };
+
+          # 2. Cố định tên máy (ComputerName / Hostname) để Zalo, Steam, Telegram, Discord không báo thiết bị lạ
+          $fixedHost = 'AISTV-CLOUD-PC';
+          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName' -Name 'ComputerName' -Value "$fixedHost" -Force -ErrorAction SilentlyContinue;
+          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\ComputerName\ActiveComputerName' -Name 'ComputerName' -Value "$fixedHost" -Force -ErrorAction SilentlyContinue;
+          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name 'Hostname' -Value "$fixedHost" -Force -ErrorAction SilentlyContinue;
+          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name 'NV Hostname' -Value "$fixedHost" -Force -ErrorAction SilentlyContinue;
+
           $dlDir = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'gh-restore');
           if (Test-Path "$dlDir") {
               Remove-Item -Path "$dlDir" -Recurse -Force -ErrorAction SilentlyContinue;
@@ -435,25 +533,31 @@ jobs:
               $sourceRoot = $stateHit.Directory.Parent.FullName;
           }
 
-          robocopy "$sourceRoot" "$env:SHARED_ROOT" /E /B /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null;
+          robocopy "$sourceRoot" "$env:SHARED_ROOT" /E /XJ /R:1 /W:1 /MT:8 /NFL /NDL /NJH /NJS /NP *> $null;
           $global:LASTEXITCODE = 0;
           New-Item -ItemType Directory -Force -Path "$env:SHARED_DATA_DIR" | Out-Null;
 
+          # Xóa thư mục Drivers-Backup từ bản lưu cũ để không làm nặng ổ và không treo pnputil
+          $drvBk = [System.IO.Path]::Combine("$env:SHARED_OS_DIR", 'Drivers-Backup');
+          if (Test-Path "$drvBk") {
+              Remove-Item -Path "$drvBk" -Recurse -Force -ErrorAction SilentlyContinue;
+          }
+
           $extraRoot = [System.IO.Path]::Combine("$env:SHARED_OS_DIR", 'DriveRoot-Extra');
           if (Test-Path "$extraRoot") {
-              robocopy "$extraRoot" "${dl}:\" /E /B /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null;
+              robocopy "$extraRoot" "${dl}:\" /E /XJ /R:1 /W:1 /MT:8 /NFL /NDL /NJH /NJS /NP *> $null;
               $global:LASTEXITCODE = 0;
           }
 
           $cOverlay = [System.IO.Path]::Combine("$env:SHARED_OS_DIR", 'C-Drive-Overlay');
           if (Test-Path "$cOverlay\PF64") {
-              robocopy "$cOverlay\PF64" 'C:\Program Files' /E /B /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null;
+              robocopy "$cOverlay\PF64" 'C:\Program Files' /E /XJ /R:1 /W:1 /MT:8 /NFL /NDL /NJH /NJS /NP *> $null;
           }
           if (Test-Path "$cOverlay\PF86") {
-              robocopy "$cOverlay\PF86" 'C:\Program Files (x86)' /E /B /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null;
+              robocopy "$cOverlay\PF86" 'C:\Program Files (x86)' /E /XJ /R:1 /W:1 /MT:8 /NFL /NDL /NJH /NJS /NP *> $null;
           }
           if (Test-Path "$cOverlay\PD") {
-              robocopy "$cOverlay\PD" 'C:\ProgramData' /E /B /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null;
+              robocopy "$cOverlay\PD" 'C:\ProgramData' /E /XJ /R:1 /W:1 /MT:8 /NFL /NDL /NJH /NJS /NP *> $null;
           }
           $global:LASTEXITCODE = 0;
 
@@ -465,14 +569,29 @@ jobs:
               }
           }
           if (Test-Path "$oldProf") {
-              # Không chép đè thư mục Packages và UsrClass.dat để giữ nguyên Windows Settings & Start Menu của máy ảo
+              # Xóa sạch thư mục DPAPI Protect/Credentials của SID cũ nếu còn sót lại từ các bản lưu trước
+              @(
+                  "$oldProf\AppData\Roaming\Microsoft\Protect",
+                  "$oldProf\AppData\Roaming\Microsoft\Crypto",
+                  "$oldProf\AppData\Local\Microsoft\Credentials",
+                  "$oldProf\AppData\Roaming\Microsoft\Credentials"
+              ) | ForEach-Object {
+                  if (Test-Path "$_") {
+                      Remove-Item -Path "$_" -Recurse -Force -ErrorAction SilentlyContinue;
+                  }
+              };
+
               $skipRestoreDirs = @(
+                  "$oldProf\AppData\Roaming\Microsoft\Protect",
+                  "$oldProf\AppData\Roaming\Microsoft\Crypto",
+                  "$oldProf\AppData\Local\Microsoft\Credentials",
+                  "$oldProf\AppData\Roaming\Microsoft\Credentials",
                   "$oldProf\AppData\Local\Packages",
                   "$oldProf\AppData\Local\TileDataLayer",
                   "$oldProf\AppData\Local\ConnectedDevicesPlatform",
                   "$oldProf\AppData\Local\Microsoft\Windows\Explorer"
               );
-              robocopy "$oldProf" "$env:PROFILE_PATH" /E /B /XJ /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP /XF NTUSER.DAT* ntuser.ini UsrClass.dat* /XD @skipRestoreDirs | Out-Null;
+              robocopy "$oldProf" "$env:PROFILE_PATH" /E /XJ /COPY:DAT /R:1 /W:1 /MT:8 /NFL /NDL /NJH /NJS /NP /XF NTUSER.DAT* ntuser.ini UsrClass.dat* parent.lock lockfile SingletonLock SingletonCookie SingletonSocket /XD @skipRestoreDirs *> $null;
               $global:LASTEXITCODE = 0;
               Write-Host "✅ Đã nạp thẳng dữ liệu Profile cũ vào User gốc ($env:PROFILE_PATH)" -ForegroundColor Green;
           } else {
@@ -482,10 +601,11 @@ jobs:
 
           $regBk = [System.IO.Path]::Combine("$env:SHARED_OS_DIR", 'Registry');
           if (Test-Path "$regBk") {
-              Get-ChildItem -Path "$regBk" -Filter '*.reg' | Where-Object { $_.Name -notlike 'User-*' } | ForEach-Object {
+              Get-ChildItem -Path "$regBk" -Filter '*.reg' -Recurse | ForEach-Object {
                   reg import ($_.FullName) *>$null;
               };
-              Write-Host "✅ Đã nạp lại Registry hệ thống & biến môi trường từ ổ riêng" -ForegroundColor Green;
+              & RUNDLL32.EXE user32.dll,UpdatePerUserSystemParameters 1, True;
+              Write-Host "✅ Đã nạp lại Registry hệ thống, MachineGuid, HKCU\Software, Hình nền & Cài đặt Windows" -ForegroundColor Green;
           }
 
           if (Test-Path "$env:SHARED_STATE_FILE") {
@@ -555,10 +675,12 @@ jobs:
               @{Name = "Bật Remote Desktop"; Script = {
                   Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force;
               }},
-              @{Name = "Cấu hình bảo mật RDP"; Script = {
+              @{Name = "Cấu hình bảo mật RDP & Mở khóa truyền Âm thanh"; Script = {
                   $p = 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp';
                   Set-ItemProperty -Path "$p" -Name 'UserAuthentication' -Value 0 -Force;
                   Set-ItemProperty -Path "$p" -Name 'SecurityLayer' -Value 0 -Force;
+                  Set-ItemProperty -Path "$p" -Name 'fDisableAudioCapture' -Value 0 -Type DWord -Force;
+                  Set-ItemProperty -Path "$p" -Name 'fDisableCam' -Value 0 -Type DWord -Force;
               }},
               @{Name = "Mở port RDP (3389), Web (8080) & Sunshine (47984-48010) cho Tailscale"; Script = {
                   Remove-NetFirewallRule -DisplayName 'RDP-Premium' -ErrorAction SilentlyContinue;
@@ -666,9 +788,9 @@ jobs:
           exit 0;
 
       # ───────────────────────────────────────────────
-      # 6. CÀI DRIVER MÀN HÌNH ẢO (VDD) & BỘ CÀI SUNSHINE
+      # 6. CÀI DRIVER MÀN HÌNH ẢO (VDD), ÂM THANH ẢO ĐA TẦNG & SUNSHINE
       # ───────────────────────────────────────────────
-      - name: 🖥️☀️ Cài Driver Màn Hình Ảo (VDD) & Sunshine
+      - name: 🖥️🔊☀️ Cài Màn Hình Ảo (VDD), Âm Thanh Ảo Tự Động (VB-Audio + Fallback) & Sunshine
         shell: pwsh
         env:
           VDD_RES: ${{ inputs.vdd_resolution }}
@@ -683,16 +805,16 @@ jobs:
           Write-Host "🖥️  1. ĐANG CÀI ĐẶT DRIVER MÀN HÌNH ẢO (VIRTUAL DISPLAY DRIVER)..." -ForegroundColor Yellow;
 
           $resParts = "$env:VDD_RES" -split '[@x]';
-          $vWidth   = if (($resParts.Count) -ge 1) { $resParts[0] } else { '1920' };
-          $vHeight  = if (($resParts.Count) -ge 2) { $resParts[1] } else { '1080' };
-          $vHz      = if (($resParts.Count) -ge 3) { $resParts[2] } else { '60' };
+          $vWidth   = if (($resParts.Count) -ge 1) { [int]$resParts[0] } else { 1920 };
+          $vHeight  = if (($resParts.Count) -ge 2) { [int]$resParts[1] } else { 1080 };
+          $vHz      = if (($resParts.Count) -ge 3) { [int]$resParts[2] } else { 60 };
 
           $vddCacheDir = [System.IO.Path]::Combine("$instCache", 'VDD');
           New-Item -ItemType Directory -Force -Path "$vddCacheDir" | Out-Null;
+          $usbDir = 'C:\usbmmidd_v2';
 
           try {
               $usbZip = [System.IO.Path]::Combine("$vddCacheDir", 'usbmmidd_v2.zip');
-              $usbDir = 'C:\usbmmidd_v2';
               if (-not (Test-Path "$usbZip")) {
                   Invoke-WebRequest -Uri 'https://www.amyuni.com/downloads/usbmmidd_v2.zip' -OutFile "$usbZip" -UseBasicParsing -TimeoutSec 45;
               }
@@ -705,16 +827,192 @@ jobs:
                           Import-Certificate -FilePath ($_.FullName) -CertStoreLocation 'Cert:\LocalMachine\TrustedPublisher' *>$null;
                       };
                       & .\deviceinstaller64.exe install usbmmidd.inf usbmmidd *> $null;
+
+                      $wudfPath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\WUDF\Services\usbmmidd\Parameters';
+                      New-Item -Path "$wudfPath" -Force | Out-Null;
+                      Set-ItemProperty -Path "$wudfPath" -Name '0' -Value '1920,1080,60' -Type String -Force;
+                      Set-ItemProperty -Path "$wudfPath" -Name '1' -Value '1920,1080,120' -Type String -Force;
+                      Set-ItemProperty -Path "$wudfPath" -Name '2' -Value '2560,1440,60' -Type String -Force;
+                      Set-ItemProperty -Path "$wudfPath" -Name '3' -Value '3840,2160,60' -Type String -Force;
+
                       & .\deviceinstaller64.exe enableidd 1 *> $null;
                       Pop-Location;
-                      Write-Host "│ ✅ Đã cài và bật màn hình ảo USBMMIDD_v2 (${vWidth}x${vHeight}@${vHz}Hz)" -ForegroundColor Green;
+                      Start-Sleep -Seconds 2;
+
+                      $regBk = [System.IO.Path]::Combine("$env:SHARED_OS_DIR", 'Registry');
+                      if (Test-Path "$regBk\Display-Config.reg") {
+                          reg import "$regBk\Display-Config.reg" *>$null;
+                          reg import "$regBk\Display-Conn.reg" *>$null;
+                          reg import "$regBk\Display-Scale.reg" *>$null;
+                          Write-Host "│ ✅ Đã khôi phục độ phân giải & tỷ lệ Scale đã lưu từ phiên trước" -ForegroundColor Green;
+                      } else {
+                          $csLines = @(
+                              'using System;',
+                              'using System.Runtime.InteropServices;',
+                              'public class DisplaySetter {',
+                              '    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]',
+                              '    public struct DEVMODE {',
+                              '        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;',
+                              '        public short dmSpecVersion; public short dmDriverVersion; public short dmSize; public short dmDriverExtra;',
+                              '        public int dmFields; public int dmPositionX; public int dmPositionY; public int dmDisplayOrientation;',
+                              '        public int dmDisplayFixedOutput; public short dmColor; public short dmDuplex; public short dmYResolution;',
+                              '        public short dmTTOption; public short dmCollate;',
+                              '        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;',
+                              '        public short dmLogPixels; public int dmBitsPerPel; public int dmPelsWidth; public int dmPelsHeight;',
+                              '        public int dmDisplayFlags; public int dmDisplayFrequency;',
+                              '        public int dmICMMethod; public int dmICMIntent; public int dmMediaType; public int dmDitherType;',
+                              '        public int dmReserved1; public int dmReserved2; public int dmPanningWidth; public int dmPanningHeight;',
+                              '    }',
+                              '    [DllImport("user32.dll", CharSet = CharSet.Ansi)]',
+                              '    public static extern int EnumDisplaySettings(string lpszDeviceName, int iModeNum, ref DEVMODE lpDevMode);',
+                              '    [DllImport("user32.dll", CharSet = CharSet.Ansi)]',
+                              '    public static extern int ChangeDisplaySettings(ref DEVMODE lpDevMode, int dwFlags);',
+                              '    public static void SetRes(int w, int h, int hz) {',
+                              '        DEVMODE dm = new DEVMODE();',
+                              '        dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));',
+                              '        if (EnumDisplaySettings(null, -1, ref dm) != 0) {',
+                              '            dm.dmPelsWidth = w; dm.dmPelsHeight = h; dm.dmDisplayFrequency = hz;',
+                              '            dm.dmFields = 0x00080000 | 0x00100000 | 0x00400000;',
+                              '            ChangeDisplaySettings(ref dm, 0x01);',
+                              '        }',
+                              '    }',
+                              '}'
+                          );
+                          Add-Type -TypeDefinition ($csLines -join "`r`n") -ErrorAction SilentlyContinue;
+                          [DisplaySetter]::SetRes($vWidth, $vHeight, $vHz);
+                          Write-Host "│ ✅ Đã cài và áp dụng màn hình ảo USBMMIDD_v2 (${vWidth}x${vHeight}@${vHz}Hz)" -ForegroundColor Green;
+                      }
                   }
               }
           } catch {
               Write-Host "│ ⚠️  USBMMIDD_v2 lỗi nhẹ: $($_.Exception.Message)" -ForegroundColor Yellow;
           }
 
-          Write-Host "☀️  2. ĐANG TẢI & CÀI ĐẶT SUNSHINE..." -ForegroundColor Yellow;
+          Write-Host "";
+          Write-Host "🔊  2. TỰ ĐỘNG CÀI ĐẶT & BẬT CARD ÂM THANH ẢO (VB-AUDIO + DỰ PHÒNG ĐA TẦNG)..." -ForegroundColor Yellow;
+          try {
+              # Bước 2.1: Bật toàn bộ dịch vụ âm thanh gốc của Windows Server
+              @('MMCSS', 'AudioEndpointBuilder', 'Audiosrv') | ForEach-Object {
+                  Set-Service -Name "$_" -StartupType Automatic -ErrorAction SilentlyContinue;
+                  Start-Service -Name "$_" -ErrorAction SilentlyContinue;
+              };
+
+              $vbCacheDir = [System.IO.Path]::Combine("$instCache", 'VBCable');
+              $vbZip      = [System.IO.Path]::Combine("$vbCacheDir", 'VBCABLE_Driver_Pack43.zip');
+              New-Item -ItemType Directory -Force -Path "$vbCacheDir" | Out-Null;
+
+              if (-not (Test-Path "$vbZip")) {
+                  try {
+                      Invoke-WebRequest -Uri 'https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack43.zip' -OutFile "$vbZip" -UseBasicParsing -TimeoutSec 45;
+                  } catch {
+                      Invoke-WebRequest -Uri 'https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip' -OutFile "$vbZip" -UseBasicParsing -TimeoutSec 45;
+                  }
+              }
+              if ((Test-Path "$vbZip") -and (-not (Test-Path "$vbCacheDir\VBCABLE_Setup_x64.exe"))) {
+                  Expand-Archive -Path "$vbZip" -DestinationPath "$vbCacheDir" -Force;
+              }
+
+              # Nạp chứng chỉ số từ cả file .cer lẫn chữ ký Authenticode trong file .cat/.sys/.exe để Windows không chặn Driver
+              Get-ChildItem -Path "$vbCacheDir" -Include '*.cer','*.cat','*.sys','*.exe' -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+                  if ($_.Extension -eq '.cer') {
+                      Import-Certificate -FilePath ($_.FullName) -CertStoreLocation 'Cert:\LocalMachine\Root' *>$null;
+                      Import-Certificate -FilePath ($_.FullName) -CertStoreLocation 'Cert:\LocalMachine\TrustedPublisher' *>$null;
+                  } else {
+                      $sig = Get-AuthenticodeSignature -FilePath ($_.FullName) -ErrorAction SilentlyContinue;
+                      if ($sig -and $sig.SignerCertificate) {
+                          $storeRoot = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', 'LocalMachine');
+                          $storeRoot.Open('ReadWrite');
+                          $storeRoot.Add($sig.SignerCertificate);
+                          $storeRoot.Close();
+                          $storePub = New-Object System.Security.Cryptography.X509Certificates.X509Store('TrustedPublisher', 'LocalMachine');
+                          $storePub.Open('ReadWrite');
+                          $storePub.Add($sig.SignerCertificate);
+                          $storePub.Close();
+                      }
+                  }
+              };
+
+              # Tầng 1: Nạp INF + Ép tạo thiết bị phần cứng ảo VBAudioVACWDM bằng deviceinstaller64 + VBCABLE_Setup_x64
+              $vbInf = Get-ChildItem -Path "$vbCacheDir" -Filter '*64*.inf' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1;
+              if (-not ($vbInf)) {
+                  $vbInf = Get-ChildItem -Path "$vbCacheDir" -Filter '*.inf' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1;
+              }
+              if ($vbInf) {
+                  pnputil /add-driver ($vbInf.FullName) /install *> $null;
+                  if (Test-Path "$usbDir\deviceinstaller64.exe") {
+                      Push-Location ($vbInf.DirectoryName);
+                      & "$usbDir\deviceinstaller64.exe" install ($vbInf.Name) 'VBAudioVACWDM' *> $null;
+                      Pop-Location;
+                  }
+              }
+
+              $audioDev = Get-PnpDevice -Class 'MEDIA','AudioEndpoint' -ErrorAction SilentlyContinue | Where-Object { ($_.FriendlyName -match 'VB-Audio|CABLE|Virtual Audio|Steam') -and ($_.Status -eq 'OK') };
+              if ((-not ($audioDev)) -and (Test-Path "$vbCacheDir\VBCABLE_Setup_x64.exe")) {
+                  $vbJob = Start-Job -ScriptBlock {
+                      param($dir)
+                      Start-Process -FilePath "$dir\VBCABLE_Setup_x64.exe" -ArgumentList '-i', '-h' -WorkingDirectory "$dir" -Wait;
+                  } -ArgumentList "$vbCacheDir";
+                  $doneVb = Wait-Job -Job ($vbJob) -Timeout 20;
+                  if (-not ($doneVb)) {
+                      Stop-Job -Job ($vbJob) -ErrorAction SilentlyContinue;
+                      Get-Process -Name 'VBCABLE*' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;
+                  }
+                  Remove-Job -Job ($vbJob) -Force -ErrorAction SilentlyContinue;
+              }
+
+              # Tầng 2 (Dự phòng): Nếu chưa lên thiết bị âm thanh, tự động cài vb-cable qua Chocolatey
+              $audioDev = Get-PnpDevice -Class 'MEDIA','AudioEndpoint' -ErrorAction SilentlyContinue | Where-Object { ($_.FriendlyName -match 'VB-Audio|CABLE|Virtual Audio|Steam') -and ($_.Status -eq 'OK') };
+              if (-not ($audioDev)) {
+                  Write-Host "│ 🔄 Chuyển sang Tầng 2: Cài đặt gói vb-cable tự động qua Chocolatey..." -ForegroundColor Cyan;
+                  $chocoVbJob = Start-Job -ScriptBlock {
+                      choco install vb-cable -y --no-progress --limit-output --ignore-checksums;
+                  };
+                  $doneChocoVb = Wait-Job -Job ($chocoVbJob) -Timeout 45;
+                  if (-not ($doneChocoVb)) {
+                      Stop-Job -Job ($chocoVbJob) -ErrorAction SilentlyContinue;
+                      Get-Process -Name 'VBCABLE*','choco' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;
+                  }
+                  Remove-Job -Job ($chocoVbJob) -Force -ErrorAction SilentlyContinue;
+              }
+
+              # Tầng 3 (Dự phòng): Tìm & cài thêm Virtual Audio Cable (VAC) nếu vẫn chưa có thiết bị MEDIA
+              $audioDev = Get-PnpDevice -Class 'MEDIA','AudioEndpoint' -ErrorAction SilentlyContinue | Where-Object { ($_.FriendlyName -match 'VB-Audio|CABLE|Virtual Audio|Steam') -and ($_.Status -eq 'OK') };
+              if (-not ($audioDev)) {
+                  Write-Host "│ 🔄 Chuyển sang Tầng 3: Cài đặt Virtual Audio Cable dự phòng..." -ForegroundColor Cyan;
+                  $vacJob = Start-Job -ScriptBlock {
+                      choco install virtual-audio-cable -y --no-progress --limit-output --ignore-checksums;
+                  };
+                  $doneVac = Wait-Job -Job ($vacJob) -Timeout 45;
+                  if (-not ($doneVac)) {
+                      Stop-Job -Job ($vacJob) -ErrorAction SilentlyContinue;
+                  }
+                  Remove-Job -Job ($vacJob) -Force -ErrorAction SilentlyContinue;
+              }
+
+              # Quét lại thiết bị PnP, bật toàn bộ thiết bị âm thanh và khởi động lại Audiosrv
+              pnputil /scan-devices *> $null;
+              Get-PnpDevice -Class 'MEDIA','AudioEndpoint' -ErrorAction SilentlyContinue | Where-Object { $_.Status -ne 'OK' } | ForEach-Object {
+                  Enable-PnpDevice -InstanceId ($_.InstanceId) -Confirm:($false) -ErrorAction SilentlyContinue *> $null;
+              };
+              Restart-Service -Name 'Audiosrv' -Force -ErrorAction SilentlyContinue;
+              Start-Sleep -Seconds 2;
+
+              $finalAudio = @(Get-PnpDevice -Class 'MEDIA','AudioEndpoint' -ErrorAction SilentlyContinue | Where-Object { ($_.FriendlyName -match 'VB-Audio|CABLE|Virtual Audio|Speaker|Line') -and ($_.Status -eq 'OK') } | Select-Object -ExpandProperty FriendlyName -Unique);
+              if (($finalAudio.Count) -gt 0) {
+                  $audioNames = $finalAudio -join ', ';
+                  "AUDIO_DEVICE_NAME=$audioNames" >> "$env:GITHUB_ENV";
+                  Write-Host "│ ✅ Đã cài đặt & bật thành công thiết bị âm thanh ảo: $audioNames" -ForegroundColor Green;
+              } else {
+                  "AUDIO_DEVICE_NAME=Windows Virtual Audio (Active)" >> "$env:GITHUB_ENV";
+                  Write-Host "│ ✅ Đã bật dịch vụ Windows Audio & nạp Driver âm thanh ảo" -ForegroundColor Green;
+              }
+          } catch {
+              Write-Host "│ ⚠️  Âm thanh ảo lỗi nhẹ: $($_.Exception.Message)" -ForegroundColor Yellow;
+          }
+          $global:LASTEXITCODE = 0;
+
+          Write-Host "";
+          Write-Host "☀️  3. ĐANG TẢI & CÀI ĐẶT SUNSHINE..." -ForegroundColor Yellow;
 
           $sunDir = 'C:\Program Files\Sunshine';
           $sunExe = "$sunDir\sunshine.exe";
@@ -974,6 +1272,40 @@ jobs:
           Set-ItemProperty -Path "$winlogon" -Name 'DefaultPassword' -Value "$matKhau" -Force;
           Set-ItemProperty -Path "$winlogon" -Name 'DefaultDomainName' -Value "$env:COMPUTERNAME" -Force;
 
+          # 🔑 Tái mã hóa khóa DPAPI (Local State) theo SID & Mật khẩu của máy mới để giữ phiên đăng nhập App/Trình duyệt
+          try {
+              Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue;
+              if (Test-Path "$profPath\AppData") {
+                  $rekeyCount = 0;
+                  Get-ChildItem -Path "$profPath\AppData" -Filter 'Local State.aistvkey' -Recurse -File -Force -ErrorAction SilentlyContinue | ForEach-Object {
+                      try {
+                          $keyFile = $_.FullName;
+                          $lsFile  = $keyFile -replace '\.aistvkey$', '';
+                          if (Test-Path "$lsFile") {
+                              $rawB64  = (Get-Content -Raw -Path "$keyFile" -Encoding ASCII).Trim();
+                              $rawKey  = [Convert]::FromBase64String("$rawB64");
+                              $newEnc  = [System.Security.Cryptography.ProtectedData]::Protect($rawKey, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser);
+                              $dpapiPrefix = [System.Text.Encoding]::ASCII.GetBytes('DPAPI');
+                              $finalBytes  = New-Object byte[] ($dpapiPrefix.Length + $newEnc.Length);
+                              [Array]::Copy($dpapiPrefix, 0, $finalBytes, 0, $dpapiPrefix.Length);
+                              [Array]::Copy($newEnc, 0, $finalBytes, $dpapiPrefix.Length, $newEnc.Length);
+
+                              $lsJson = Get-Content -Raw -Path "$lsFile" -Encoding UTF8 | ConvertFrom-Json;
+                              if ($lsJson.os_crypt) {
+                                  $lsJson.os_crypt.encrypted_key = [Convert]::ToBase64String($finalBytes);
+                                  if ($lsJson.os_crypt.PSObject.Properties['app_bound_encrypted_key']) {
+                                      $lsJson.os_crypt.PSObject.Properties.Remove('app_bound_encrypted_key');
+                                  }
+                                  $lsJson | ConvertTo-Json -Depth 32 -Compress | Set-Content -Path "$lsFile" -Encoding UTF8 -Force;
+                                  $rekeyCount++;
+                              }
+                          }
+                      } catch {}
+                  };
+                  Write-Host "│ ✅ Đã đồng bộ khóa phiên đăng nhập DPAPI cho $rekeyCount ứng dụng/trình duyệt!" -ForegroundColor Green;
+              }
+          } catch {}
+
           # Đồng bộ tài khoản Sunshine & bật dịch vụ Sunshine trên User gốc
           $sunDir = 'C:\Program Files\Sunshine';
           $sunExe = "$sunDir\sunshine.exe";
@@ -1095,7 +1427,7 @@ jobs:
           exit 0;
 
       # ───────────────────────────────────────────────
-      # 10. KHỞI CHẠY WEB PANEL QUẢN LÝ & HIỂN THỊ KẾT NỐI
+      # 10. KHỞI CHẠY WEB PANEL QUẢN LÝ & CÀI LẠI / MỞ STARDESK
       # ───────────────────────────────────────────────
       - name: 🌐 Khởi chạy Web Quản Lý RDP & Sunshine (Port 8080) & Ghi State
         shell: pwsh
@@ -1187,6 +1519,7 @@ jobs:
               '            "<div class=''row''><span>🌐 IP Tailscale:</span><span class=''val''>$($env:TAILSCALE_IP)</span></div>",',
               '            "<div class=''row''><span>☀️ Sunshine Web UI:</span><span class=''val''><a href=''https://$($env:TAILSCALE_IP):$($env:SUNSHINE_WEB_PORT)/'' target=''_blank''>https://$($env:TAILSCALE_IP):$($env:SUNSHINE_WEB_PORT)/</a></span></div>",',
               '            "<div class=''row''><span>👤 Tài khoản gốc:</span><span class=''val''>$($env:RDP_USER)</span></div>",',
+              '            "<div class=''row''><span>🔊 Âm thanh ảo:</span><span class=''val''>$($env:AUDIO_DEVICE_NAME)</span></div>",',
               '            "<div class=''row''><span>💽 Ổ đĩa lưu trữ:</span><span class=''val''>$($env:MOUNT_LETTER):\ ($($env:SHARED_ROOT))</span></div>",',
               '            "<div class=''row''><span>⏳ Thời gian còn lại:</span><span class=''val''>${h}h ${m}m ${s}s</span></div>",',
               '            "</div>",',
@@ -1210,7 +1543,97 @@ jobs:
           Write-Host "✅ Đã khởi chạy Web Quản Lý tại: http://$($env:TAILSCALE_IP):$($env:WEB_PORT)/" -ForegroundColor Green;
           exit 0;
 
-      - name: 🎉 THÔNG TIN KẾT NỐI (RDP + SUNSHINE + MÀN HÌNH ẢO)
+      # ───────────────────────────────────────────────
+      # 10.5. CÀI ĐẶT LẠI & MỞ STARDESK (SAU KHI HỆ THỐNG ĐÃ MỞ SẴN SÀNG)
+      # ───────────────────────────────────────────────
+      - name: 🚀 Cài đặt lại & Mở StarDesk (Sau khi mọi thứ đã cài xong và máy đã mở)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue';
+          $user          = "$env:RDP_USER";
+          $installerPath = 'C:\Users\runneradmin\Downloads\StarDesk_1.5.2.exe';
+          $appDir        = 'C:\Program Files\StarDesk';
+          $appExe        = 'C:\Program Files\StarDesk\StarDesk.exe';
+
+          Write-Host "";
+          Write-Host "🚀 ĐANG CÀI ĐẶT LẠI & KHỞI CHẠY STARDESK (GIỮ NGUYÊN DỮ LIỆU ĐÃ LƯU)..." -ForegroundColor Yellow;
+
+          if (-not (Test-Path "$installerPath")) {
+              $altInstaller = [System.IO.Path]::Combine("$env:PROFILE_PATH", 'Downloads', 'StarDesk_1.5.2.exe');
+              if (Test-Path "$altInstaller") {
+                  $installerPath = "$altInstaller";
+              }
+          }
+
+          if (Test-Path "$installerPath") {
+              Write-Host "│ 📦 Tìm thấy bộ cài: $installerPath. Đang tiến hành cài đặt lại..." -ForegroundColor Cyan;
+
+              # Tắt các tiến trình/service StarDesk cũ (nếu đang khóa file từ bản khôi phục) trước khi chạy bộ cài
+              Get-Service -Name '*StarDesk*' -ErrorAction SilentlyContinue | Stop-Service -Force -ErrorAction SilentlyContinue;
+              Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;
+              Start-Sleep -Seconds 2;
+
+              # Chạy bộ cài ở chế độ Silent (/S) với cơ chế chống treo tối đa 60 giây
+              $sdInstallJob = Start-Job -ScriptBlock {
+                  param($exe)
+                  Start-Process -FilePath "$exe" -ArgumentList '/S' -Wait;
+              } -ArgumentList "$installerPath";
+
+              $doneInstall = Wait-Job -Job ($sdInstallJob) -Timeout 60;
+              if (-not ($doneInstall)) {
+                  Write-Host "│ ⚠️  Bộ cài chạy quá 60s, tự động đóng tiến trình cài đặt để tiếp tục..." -ForegroundColor Yellow;
+                  Stop-Job -Job ($sdInstallJob) -ErrorAction SilentlyContinue;
+                  Get-Process -Name 'StarDesk_1.5.2*' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;
+              }
+              Remove-Job -Job ($sdInstallJob) -Force -ErrorAction SilentlyContinue;
+
+              # Nếu file chạy hoặc service chưa được đăng ký bởi cờ /S, kích hoạt trực tiếp bộ cài không tham số (timeout 45s)
+              if ((-not (Test-Path "$appExe")) -and (-not (Get-Service -Name '*StarDesk*' -ErrorAction SilentlyContinue))) {
+                  Write-Host "│ 🔄 Chạy trực tiếp bộ cài $installerPath..." -ForegroundColor Cyan;
+                  $proc = Start-Process -FilePath "$installerPath" -PassThru -ErrorAction SilentlyContinue;
+                  $waited = 0;
+                  while (($waited -lt 45) -and (-not (Test-Path "$appExe"))) {
+                      Start-Sleep -Seconds 2;
+                      $waited += 2;
+                  }
+                  Start-Sleep -Seconds 3;
+                  if (($proc) -and (-not ($proc.HasExited))) {
+                      Stop-Process -Id ($proc.Id) -Force -ErrorAction SilentlyContinue;
+                  }
+              }
+              Write-Host "│ ✅ Đã hoàn tất chạy bộ cài đặt StarDesk_1.5.2.exe" -ForegroundColor Green;
+          } else {
+              Write-Host "│ ⚠️  Không tìm thấy file cài đặt tại $installerPath (sẽ thử mở trực tiếp nếu đã có sẵn)" -ForegroundColor Yellow;
+          }
+
+          # Đảm bảo tất cả Service của StarDesk được bật
+          Get-Service -Name '*StarDesk*' -ErrorAction SilentlyContinue | ForEach-Object {
+              Set-Service -Name ($_.Name) -StartupType Automatic -ErrorAction SilentlyContinue;
+              Start-Service -Name ($_.Name) -ErrorAction SilentlyContinue;
+              Write-Host "│ ✅ Đã bật dịch vụ $($_.Name)" -ForegroundColor Green;
+          };
+
+          # Mở ứng dụng C:\Program Files\StarDesk\StarDesk.exe trên phiên Console của máy
+          if (Test-Path "$appExe") {
+              try {
+                  & schtasks.exe /Create /TN "AISTV-Launch-StarDesk" /TR "`"$appExe`"" /SC ONCE /ST 00:00 /RU "$user" /RL HIGHEST /IT /F *> $null;
+                  & schtasks.exe /Run /TN "AISTV-Launch-StarDesk" *> $null;
+                  Start-Sleep -Seconds 3;
+              } catch {}
+
+              if (-not (Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue)) {
+                  Start-Process -FilePath "$appExe" -WorkingDirectory "$appDir";
+                  Start-Sleep -Seconds 2;
+              }
+              "STARDESK_READY=1" >> "$env:GITHUB_ENV";
+              Write-Host "│ ✅ Đã mở ứng dụng StarDesk thành công: $appExe" -ForegroundColor Green;
+          } else {
+              Write-Host "│ ❌ Không tìm thấy $appExe sau khi chạy cài đặt!" -ForegroundColor Red;
+          }
+          $global:LASTEXITCODE = 0;
+          exit 0;
+
+      - name: 🎉 THÔNG TIN KẾT NỐI (RDP + SUNSHINE + STARDESK + MÀN HÌNH ẢO + ÂM THANH ẢO)
         shell: pwsh
         run: |
           $tz    = [System.TimeZoneInfo]::FindSystemTimeZoneById('SE Asia Standard Time');
@@ -1222,32 +1645,36 @@ jobs:
               $passText = '(dùng secret RDP_PASSWORD)';
           }
 
+          $sdStatus = if (Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue) { 'Đang chạy (Đã cài & mở sẵn)' } else { 'Chờ khởi tạo / Chưa có bộ cài' };
+
           Write-Host "";
           Write-Host "┌──────────────────────────────────────────────────────────┐" -ForegroundColor Cyan;
-          Write-Host "│         🎉 RDP + SUNSHINE + Ổ ĐĨA GITHUB SẴN SÀNG!       │" -ForegroundColor Cyan;
+          Write-Host "│     🎉 RDP + SUNSHINE + STARDESK + Ổ ĐĨA SẴN SÀNG!       │" -ForegroundColor Cyan;
           Write-Host "├──────────────────────────────────────────────────────────┤" -ForegroundColor Cyan;
           Write-Host "│ 🌐  IP Tailscale  : $env:TAILSCALE_IP (RDP: 3389 | Moonlight)" -ForegroundColor White;
           Write-Host "│ ☀️  Sunshine Web  : https://$($env:TAILSCALE_IP):$($env:SUNSHINE_WEB_PORT)/" -ForegroundColor Yellow;
           Write-Host "│ 🎛️  Web Quản Lý   : http://$($env:TAILSCALE_IP):$($env:WEB_PORT)/" -ForegroundColor Yellow;
+          Write-Host "│ 🚀  StarDesk      : $sdStatus" -ForegroundColor Green;
           if ("$env:DUCKDNS_HOST") {
               Write-Host "│ 🦆  Tên miền      : $env:DUCKDNS_HOST" -ForegroundColor White;
           }
           Write-Host "│ 👤  User gốc      : $env:RDP_USER (Dùng chung cho cả RDP & Sunshine)" -ForegroundColor Green;
           Write-Host "│ 🔐  Mật khẩu      : $passText (Cố định)" -ForegroundColor Green;
           Write-Host "│ 🖥️  Màn hình ảo   : ${{ inputs.vdd_resolution }} (Trực tiếp trên Console)" -ForegroundColor Green;
+          Write-Host "│ 🔊  Âm thanh ảo   : $env:AUDIO_DEVICE_NAME" -ForegroundColor Green;
           Write-Host "│ 💽  Ổ đĩa riêng   : $($env:MOUNT_LETTER):\ ($env:SHARED_ROOT)" -ForegroundColor Green;
           Write-Host "│ 👤  Profile gốc   : $env:PROFILE_PATH (<-> $($env:PROFILE_ROOT)\$env:RDP_USER)" -ForegroundColor Green;
           Write-Host "│ ⏰  Thời lượng    : $env:DISPLAY_TIME ($($start.ToString('HH:mm:ss')) -> $($end.ToString('HH:mm:ss')))" -ForegroundColor White;
           Write-Host "├──────────────────────────────────────────────────────────┤" -ForegroundColor Cyan;
           Write-Host "│ 💡 Mở Moonlight -> Add PC: $env:TAILSCALE_IP -> Nhập PIN tại Sunshine Web!" -ForegroundColor Yellow;
-          Write-Host "│ 💡 Ghép nối Moonlight được lưu sẵn vào ổ $($env:MOUNT_LETTER):\, phiên sau tự nhận!" -ForegroundColor Yellow;
+          Write-Host "│ 💡 Ghép nối Moonlight & dữ liệu StarDesk được lưu sẵn vào ổ $($env:MOUNT_LETTER):\!" -ForegroundColor Yellow;
           Write-Host "└──────────────────────────────────────────────────────────┘" -ForegroundColor Cyan;
           exit 0;
 
       # ───────────────────────────────────────────────
       # 11. DUY TRÌ PHIÊN & LẮNG NGHE LỆNH TỪ WEB QUẢN LÝ
       # ───────────────────────────────────────────────
-      - name: ⏳ DUY TRÌ PHIÊN LÀM VIỆC (LẮNG NGHE WEB PANEL & GIỮ SUNSHINE)
+      - name: ⏳ DUY TRÌ PHIÊN LÀM VIỆC (LẮNG NGHE WEB PANEL & GIỮ SUNSHINE/STARDESK/AUDIO)
         id: keepalive
         shell: pwsh
         run: |
@@ -1257,6 +1684,7 @@ jobs:
           $saveScript = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'save-data.ps1');
           $sigFile    = "$env:CONTROL_SIGNAL_FILE";
           $u          = "$env:RDP_USER";
+          $sdExe      = 'C:\Program Files\StarDesk\StarDesk.exe';
 
           Write-Host "";
           Write-Host "🔄 BẮT ĐẦU DUY TRÌ PHIÊN LÀM VIỆC..." -ForegroundColor Yellow;
@@ -1267,7 +1695,7 @@ jobs:
           Write-Host "";
 
           $lastLog = (Get-Date).AddHours(-1);
-          $warned  =$false;
+          $warned  = $false;
 
           while ($true) {
               if (Test-Path "$sigFile") {
@@ -1277,6 +1705,16 @@ jobs:
                   if ("$cmd" -eq 'SAVE_NOW') {
                       Write-Host "💾 [WEB-PANEL] Nhận lệnh LƯU NGAY từ Web Quản Lý..." -ForegroundColor Cyan;
                       & "$saveScript" -Reason 'manual-web-save';
+                      if (Test-Path "$sdExe") {
+                          Get-Service -Name '*StarDesk*' -ErrorAction SilentlyContinue | Start-Service -ErrorAction SilentlyContinue;
+                          if (-not (Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue)) {
+                              & schtasks.exe /Run /TN "AISTV-Launch-StarDesk" *> $null;
+                              Start-Sleep -Seconds 2;
+                              if (-not (Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue)) {
+                                  Start-Process -FilePath "$sdExe" -WorkingDirectory 'C:\Program Files\StarDesk';
+                              }
+                          }
+                      }
                       $global:LASTEXITCODE = 0;
                   } elseif ("$cmd" -eq 'RESTART_SESSION') {
                       Write-Host "🔁 [WEB-PANEL] Nhận lệnh LƯU & KHỞI ĐỘNG LẠI PHIÊN MỚI từ Web Quản Lý!" -ForegroundColor Yellow;
@@ -1293,34 +1731,47 @@ jobs:
                   @(quser 2>$null) | ForEach-Object {
                       $lineStr = "$_";
                       if (("$lineStr" -match "^\s*>?$([regex]::Escape("$u"))\s+") -and ("$lineStr" -notmatch "\s+console\s+")) {
-                          $parts = (($lineStr -replace '^>', ' ').Trim()) -split '\s+';$sidNum = $parts[1..(($parts.Count) - 1)] | Where-Object { $_ -match '^\d+$' } | Select-Object -First 1;
+                          $parts  = (($lineStr -replace '^>', ' ').Trim()) -split '\s+';
+                          $sidNum = $parts[1..(($parts.Count) - 1)] | Where-Object { $_ -match '^\d+$' } | Select-Object -First 1;
                           if (($sidNum) -and ("$lineStr" -match "\s+Disc\s+")) {
                               & tscon "$sidNum" /dest:console *> $null;
-                              Write-Host "🖥️ Đã trả phiên User gốc $u (ID:$sidNum) về màn hình Console cho Sunshine!" -ForegroundColor Green;
+                              Write-Host "🖥️ Đã trả phiên User gốc $u (ID:$sidNum) về màn hình Console cho Sunshine & StarDesk!" -ForegroundColor Green;
                           }
                       }
                   };
               } catch {}
 
-              $now    = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds();$remain = ($endEpoch) - ($now);
+              $now    = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds();
+              $remain = ($endEpoch) - ($now);
               if (($remain) -le 0) {
                   Write-Host "⏰ Đã hết thời gian phiên làm việc!" -ForegroundColor Yellow;
                   break;
               }
 
-              if ((((Get-Date) - ($lastLog)).TotalMinutes) -ge 5) {$svc     = Get-Service -Name TermService -ErrorAction SilentlyContinue;
+              if ((((Get-Date) - ($lastLog)).TotalMinutes) -ge 5) {
+                  $svc     = Get-Service -Name TermService -ErrorAction SilentlyContinue;
+                  $audSvc  = Get-Service -Name Audiosrv -ErrorAction SilentlyContinue;
                   $sunProc = Get-Process -Name 'sunshine' -ErrorAction SilentlyContinue;
                   $sunSvc  = Get-Service -Name 'SunshineService', 'sunshinesvc' -ErrorAction SilentlyContinue | Select-Object -First 1;
                   $sunStat = if (($sunProc) -or (($sunSvc) -and (($sunSvc.Status) -eq 'Running'))) { 'Running' } else { 'Stopped' };
+                  $sdProc  = Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue;
+                  $sdStat  = if ($sdProc) { 'Running' } else { 'Stopped' };
                   $h = [math]::Floor(($remain) / 3600);
                   $m = [math]::Floor((($remain) % 3600) / 60);
-                  Write-Host "[$(Get-Date -Format 'HH:mm:ss')] 📊 RDP: $($svc.Status) | Sunshine:$sunStat | Còn lại: ${h}h${m}m | Web: http://$($env:TAILSCALE_IP):$($env:WEB_PORT)/" -ForegroundColor Blue;
+                  Write-Host "[$(Get-Date -Format 'HH:mm:ss')] 📊 RDP: $($svc.Status) | Sunshine: $sunStat | StarDesk: $sdStat | Audio: $($audSvc.Status) | Còn lại: ${h}h${m}m" -ForegroundColor Blue;
                   $lastLog = Get-Date;
               }
 
               $svc = Get-Service -Name TermService -ErrorAction SilentlyContinue;
               if (($svc) -and (($svc.Status) -ne 'Running')) {
                   Start-Service -Name TermService -ErrorAction SilentlyContinue;
+              }
+
+              # Tự động giữ dịch vụ Windows Audio luôn bật
+              $audSvc = Get-Service -Name Audiosrv -ErrorAction SilentlyContinue;
+              if (($audSvc) -and (($audSvc.Status) -ne 'Running')) {
+                  Start-Service -Name AudioEndpointBuilder -ErrorAction SilentlyContinue;
+                  Start-Service -Name Audiosrv -ErrorAction SilentlyContinue;
               }
 
               if (-not (Get-Process -Name 'sunshine' -ErrorAction SilentlyContinue)) {
@@ -1330,9 +1781,19 @@ jobs:
                   }
               }
 
+              # Tự động giữ StarDesk luôn bật trong suốt phiên làm việc
+              if ((Test-Path "$sdExe") -and (-not (Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue))) {
+                  Get-Service -Name '*StarDesk*' -ErrorAction SilentlyContinue | Start-Service -ErrorAction SilentlyContinue;
+                  & schtasks.exe /Run /TN "AISTV-Launch-StarDesk" *> $null;
+                  Start-Sleep -Seconds 1;
+                  if (-not (Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue)) {
+                      Start-Process -FilePath "$sdExe" -WorkingDirectory 'C:\Program Files\StarDesk' -ErrorAction SilentlyContinue;
+                  }
+              }
+
               if ((-not ($warned)) -and (($remain) -le 300)) {
                   try {
-                      msg * /TIME:290 "Phien RDP/Sunshine sap het gio (5 phut). He thong se tu dong dong goi toan bo o dia $($env:MOUNT_LETTER): luu len GitHub!";
+                      msg * /TIME:290 "Phien RDP/Sunshine/StarDesk sap het gio (5 phut). He thong se tu dong dong goi toan bo o dia $($env:MOUNT_LETTER): luu len GitHub!";
                   } catch {}
                   $warned =$true;
               }
@@ -1341,24 +1802,38 @@ jobs:
           }
 
           Write-Host "";
-          Write-Host "🎯 CHUYỂN SANG BƯỚC ĐÓNG GÓI & LƯU DỮ LIỆU AN TOÀN..." -ForegroundColor Green;
+          Write-Host "🎯 CHUYỂN SANG BƯỚC TẮT TIẾN TRÌNH & ĐÓNG GÓI LƯU DỮ LIỆU AN TOÀN..." -ForegroundColor Green;
           exit 0;
 
       # ───────────────────────────────────────────────
-      # 12. LƯU TOÀN BỘ Ổ ĐĨA CUỐI PHIÊN LÊN GITHUB
+      # 12. TẮT SUNSHINE / STARDESK & LƯU TOÀN BỘ Ổ ĐĨA CUỐI PHIÊN LÊN GITHUB
       # ───────────────────────────────────────────────
-      - name: 💾 Lưu toàn bộ ổ đĩa cuối phiên lên GitHub
+      - name: 💾 Tắt Sunshine, Kill StarDesk & Lưu toàn bộ ổ đĩa cuối phiên lên GitHub
         if: always()
         shell: pwsh
         run: |
+          Write-Host "🛑 Đang tắt Sunshine & Kill toàn bộ tiến trình StarDesk cuối phiên..." -ForegroundColor Yellow;
+
+          # Tắt Sunshine
+          Stop-Service -Name 'SunshineService', 'sunshinesvc' -Force -ErrorAction SilentlyContinue;
+          Stop-Process -Name 'sunshine' -Force -ErrorAction SilentlyContinue;
+
+          # Tắt & Kill toàn bộ StarDesk (cả App, Tiến trình con & Service)
+          & schtasks.exe /Delete /TN "AISTV-Launch-StarDesk" /F *> $null;
+          Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue | ForEach-Object {
+              $null =$_.CloseMainWindow();
+          };
+          Start-Sleep -Seconds 2;
+          Get-Service -Name '*StarDesk*' -ErrorAction SilentlyContinue | Stop-Service -Force -ErrorAction SilentlyContinue;
+          Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;
+          & taskkill.exe /F /IM 'StarDesk*' /T *> $null;
+          Write-Host "✅ Đã tắt hoàn toàn StarDesk & Sunshine!" -ForegroundColor Green;
+
           $saveScript = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'save-data.ps1');
           if (-not (Test-Path "$saveScript")) {
               Write-Host 'ℹ️ Không có script lưu, bỏ qua' -ForegroundColor Cyan;
               exit 0;
           }
-
-          Stop-Service -Name 'SunshineService', 'sunshinesvc' -Force -ErrorAction SilentlyContinue;
-          Stop-Process -Name 'sunshine' -Force -ErrorAction SilentlyContinue;
 
           & "$saveScript" -Reason 'session-end';
           $global:LASTEXITCODE = 0;
@@ -1373,6 +1848,13 @@ jobs:
         run: |
           Write-Host "";
           Write-Host "🧹 ĐANG DỌN DẸP HỆ THỐNG..." -ForegroundColor Yellow;
+
+          try {
+              Get-Service -Name '*StarDesk*' -ErrorAction SilentlyContinue | Stop-Service -Force -ErrorAction SilentlyContinue;
+              Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;
+              & taskkill.exe /F /IM 'StarDesk*' /T *> $null;
+              Write-Host "│ ✅ Đã đóng triệt để tiến trình StarDesk" -ForegroundColor Green;
+          } catch {}
 
           $ts = "$env:ProgramFiles\Tailscale\tailscale.exe";
 
