@@ -1,14 +1,14 @@
 {
-  "user": "AISTV-D",
-  "sid": "S-1-5-21-3213014087-2684668049-2838998412-1003",
+  "user": "runneradmin",
+  "sid": "S-1-5-21-1000861503-3182281758-1041194900-500",
   "password": null,
   "passwordSource": "secret",
   "windowsImage": "windows-2022",
   "osBuild": "20348",
   "driveLetter": "X",
-  "tailscaleIp": "100.97.198.67",
+  "tailscaleIp": "100.127.156.35",
   "durationMinutes": 300,
-  "startUtc": "2026-10-14T16:19:31.3152629Z",
-  "runId": "38596258334",
-  "lastUpdatedUtc": "2026-10-14T16:21:17.9068642Z"
+  "startUtc": "2026-10-15T11:32:02.0177845Z",
+  "runId": "38727490933",
+  "lastUpdatedUtc": "2026-10-15T16:16:57.1857325Z"
 }
