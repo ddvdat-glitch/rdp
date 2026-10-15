@@ -1,14 +1,14 @@
 {
   "user": "runneradmin",
-  "sid": "S-1-5-21-1000861503-3182281758-1041194900-500",
+  "sid": "S-1-5-21-3213014087-2684668049-2838998412-500",
   "password": null,
   "passwordSource": "secret",
   "windowsImage": "windows-2022",
   "osBuild": "20348",
   "driveLetter": "X",
-  "tailscaleIp": "100.127.156.35",
+  "tailscaleIp": "100.78.229.16",
   "durationMinutes": 300,
-  "startUtc": "2026-10-15T11:32:02.0177845Z",
-  "runId": "38727490933",
-  "lastUpdatedUtc": "2026-10-15T16:20:13.7754190Z"
+  "startUtc": "2026-10-15T16:32:24.7072277Z",
+  "runId": "38768610260",
+  "lastUpdatedUtc": "2026-10-15T21:24:00.5591132Z"
 }
