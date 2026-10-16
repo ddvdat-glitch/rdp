@@ -43,6 +43,8 @@ jobs:
       DISCORD_TOKEN: ${{ secrets.DISCORD_AUTH_KEY }}
       ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
       GH_TOKEN: ${{ github.token }}
+      # Token cá nhân (PAT: repo + workflow) để lệnh !may tạo file workflow mới & chạy action. Không có thì !may chỉ liệt kê/chạy/đọc log được.
+      RDP_GH_TOKEN: ${{ secrets.PAT_TOKEN }}
       DATA_FILE: data.json          # file dữ liệu của bot (nằm ở thư mục gốc của bot)
       DATA_BRANCH: bot-data         # nhánh dùng để lưu dữ liệu
       SAVE_EVERY_MINUTES: '5'       # lưu định kỳ mỗi X phút
