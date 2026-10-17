@@ -1,0 +1,1029 @@
+name: 🚀 BOT CUADAT RUNNER
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: '🕐 Thời gian chạy mỗi phiên (tối đa 5h30m)'
+        required: false
+        default: '5h30m'
+        type: choice
+        options:
+        - '1h'
+        - '3h'
+        - '5h30m'
+      port:
+        description: '📍 Cổng ứng dụng (PORT)'
+        required: false
+        default: '3000'
+        type: string
+      auto_restart:
+        description: '🔁 Tự chạy lại phiên mới khi hết giờ (chạy liên tục nhiều ngày)'
+        required: false
+        default: true
+        type: boolean
+      duckdns_domain:
+        description: '🦆 Tên miền DuckDNS (mặc định: datdemo.duckdns.org)'
+        required: false
+        default: 'datdemo.duckdns.org'
+        type: string
+      duckdns_ip_mode:
+        description: '🌐 Loại IP trỏ về DuckDNS (tailscale = IP Tailscale 100.x, public = IP mạng ngoài)'
+        required: false
+        default: 'tailscale'
+        type: choice
+        options:
+        - 'tailscale'
+        - 'public'
+
+permissions:
+  contents: write   # cần để lưu data.json & file phiên lên nhánh bot-data
+  actions: write    # cần để tự kích hoạt lại workflow
+
+# Chỉ cho 1 phiên chạy tại một thời điểm (tránh 2 bot chạy song song và ghi đè dữ liệu của nhau)
+concurrency:
+  group: bot-cuadat-runner
+  cancel-in-progress: false
+
+jobs:
+  Run-Bot:
+    runs-on: windows-latest
+    timeout-minutes: 340
+
+    env:
+      APP_PORT: ${{ inputs.port }}
+      REPO_URL: https://github.com/ddvdat-glitch/botcuadat.git
+      DISCORD_TOKEN: ${{ secrets.DISCORD_AUTH_KEY }}
+      ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+      # Token cá nhân (PAT: repo + workflow) để lệnh !may tạo file workflow mới & chạy action. Không có thì !may chỉ liệt kê/chạy/đọc log được.
+      RDP_GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+      DUCKDNS_TOKEN: ${{ secrets.DUCKDNS_TOKEN }}
+      DUCKDNS_DOMAIN: ${{ inputs.duckdns_domain || 'datdemo.duckdns.org' }}
+      DUCKDNS_IP_MODE: ${{ inputs.duckdns_ip_mode || 'tailscale' }}
+      BOT_API_SECRET: ${{ secrets.BOT_API_SECRET || secrets.ADMIN_PASSWORD || '2008' }}
+      DATA_FILE: data.json          # file dữ liệu của bot (nằm ở thư mục gốc của bot)
+      DATA_BRANCH: bot-data         # nhánh dùng để lưu dữ liệu
+      SAVE_EVERY_MINUTES: '5'       # lưu định kỳ mỗi X phút
+
+    steps:
+      # 0. GHI MỐC THỜI GIAN BẮT ĐẦU JOB (UTC epoch -> không bị lệch khi qua 00:00)
+      - name: ⏱️ Ghi mốc thời gian
+        run: |
+          "JOB_START=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" >> $env:GITHUB_ENV
+
+      # 1. CÀI NODE
+      - name: 🟢 Cài Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # 2. CLONE + INSTALL
+      - name: 📥 Clone & npm install
+        run: |
+          git clone $env:REPO_URL app
+          if ($LASTEXITCODE -ne 0) { throw "git clone thất bại" }
+          Set-Location app
+          npm install
+          if ($LASTEXITCODE -ne 0) { throw "npm install thất bại" }
+          Write-Host "✅ npm install xong" -ForegroundColor Green
+
+      # 2b. TẠO SCRIPT ĐỒNG BỘ DỮ LIỆU + KHÔI PHỤC DỮ LIỆU CŨ (BAO GỒM CẢ FILE PHIÊN TỪ Ổ D:\ CỦA MÁY ẢO)
+      - name: 💾 Khôi phục dữ liệu
+        run: |
+          @'
+          param([string]$Mode)
+          $ErrorActionPreference = 'Continue'
+
+          $file        = $env:DATA_FILE
+          $branch      = $env:DATA_BRANCH
+          $appDir      = Join-Path $env:GITHUB_WORKSPACE 'app'
+          $local       = Join-Path $appDir $file
+          $localBridge = Join-Path $appDir 'rdp-bridge-state.json'
+          $localSess   = Join-Path $appDir 'rdp-session-files'
+          $repoDir     = Join-Path $env:RUNNER_TEMP 'datarepo'
+          $hashFile    = Join-Path $env:RUNNER_TEMP 'lasthash.txt'
+          $url         = "https://x-access-token:$($env:GH_TOKEN)@github.com/$($env:GITHUB_REPOSITORY).git"
+
+          # ================= KHÔI PHỤC =================
+          if ($Mode -eq 'restore') {
+              New-Item -ItemType Directory -Force -Path $localSess | Out-Null
+              git ls-remote --exit-code --heads $url $branch *> $null
+              $code = $LASTEXITCODE
+
+              if ($code -eq 2) {
+                  Write-Host "ℹ️ Chưa có nhánh $branch (lần chạy đầu), dùng dữ liệu mặc định của bot"
+                  "DATA_READY=1" >> $env:GITHUB_ENV
+                  exit 0
+              }
+              if ($code -ne 0) {
+                  Write-Host "❌ Không kết nối được tới nhánh $branch (mã lỗi $code)"
+                  exit 1
+              }
+
+              if (Test-Path $repoDir) { Remove-Item $repoDir -Recurse -Force }
+              git -c core.autocrlf=false clone --branch $branch --single-branch --depth 1 $url $repoDir 2>&1 | Out-Null
+              if ($LASTEXITCODE -ne 0) { Write-Host "❌ Clone nhánh $branch thất bại"; exit 1 }
+
+              $src = Join-Path $repoDir $file
+              if (Test-Path $src) {
+                  node -e "JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'))" $src 2>$null
+                  if ($LASTEXITCODE -ne 0) {
+                      Write-Host "::error::$file trên nhánh $branch không đọc được (hỏng hoặc có BOM). Dừng để bot không ghi đè bằng dữ liệu mặc định."
+                      exit 1
+                  }
+                  Copy-Item $src $local -Force
+                  (Get-FileHash $local -Algorithm SHA256).Hash | Set-Content $hashFile
+                  Write-Host "✅ Đã khôi phục $file từ nhánh $branch"
+              } else {
+                  Write-Host "ℹ️ Nhánh $branch chưa có $file, dùng dữ liệu mặc định"
+              }
+
+              $srcBridge = Join-Path $repoDir 'rdp-bridge-state.json'
+              if (Test-Path $srcBridge) {
+                  Copy-Item $srcBridge $localBridge -Force -ErrorAction SilentlyContinue
+                  Write-Host "✅ Đã khôi phục rdp-bridge-state.json từ nhánh $branch"
+              }
+
+              $srcSess = Join-Path $repoDir 'rdp-session-files'
+              if (Test-Path $srcSess) {
+                  Copy-Item "$srcSess\*" $localSess -Recurse -Force -ErrorAction SilentlyContinue
+                  Write-Host "✅ Đã khôi phục thư mục rdp-session-files (các file phiên ổ D:\ của máy ảo)"
+              }
+
+              "DATA_READY=1" >> $env:GITHUB_ENV
+              exit 0
+          }
+
+          # ================= LƯU =================
+          if ($Mode -eq 'save') {
+              # Chưa khôi phục xong thì tuyệt đối không lưu (tránh ghi đè dữ liệu cũ bằng dữ liệu mặc định)
+              if ($env:DATA_READY -ne '1') { Write-Host '⚠️ Chưa khôi phục dữ liệu, bỏ qua bước lưu'; exit 0 }
+              if (-not (Test-Path $local)) { Write-Host "ℹ️ Không thấy $file, bỏ qua"; exit 0 }
+
+              # Kiểm tra JSON hợp lệ (tránh lưu file đang bị ghi dở)
+              node -e "JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'))" $local 2>$null
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Host "::warning::$file đang ghi dở hoặc không hợp lệ, bỏ qua lần lưu này"
+                  exit 0
+              }
+
+              $hash = (Get-FileHash $local -Algorithm SHA256).Hash
+              if (Test-Path $localBridge) {
+                  $hash += "_" + (Get-FileHash $localBridge -Algorithm SHA256).Hash
+              }
+              if ((Test-Path $hashFile) -and ((Get-Content $hashFile -Raw).Trim() -eq $hash)) {
+                  Write-Host 'ℹ️ Dữ liệu không đổi, bỏ qua'
+                  exit 0
+              }
+
+              # Tạo repo mới mỗi lần -> nhánh chỉ có đúng 1 commit, không phình lịch sử
+              if (Test-Path $repoDir) { Remove-Item $repoDir -Recurse -Force }
+              New-Item -ItemType Directory -Force -Path $repoDir | Out-Null
+              Copy-Item $local (Join-Path $repoDir $file) -Force
+
+              if (Test-Path $localBridge) {
+                  Copy-Item $localBridge (Join-Path $repoDir 'rdp-bridge-state.json') -Force -ErrorAction SilentlyContinue
+              }
+              if (Test-Path $localSess) {
+                  $dstSess = Join-Path $repoDir 'rdp-session-files'
+                  New-Item -ItemType Directory -Force -Path $dstSess | Out-Null
+                  Copy-Item "$localSess\*" $dstSess -Recurse -Force -ErrorAction SilentlyContinue
+              }
+
+              git -C $repoDir init -q
+              git -C $repoDir checkout -q -b $branch
+              git -C $repoDir config core.autocrlf false
+              git -C $repoDir config user.name  'bot-data'
+              git -C $repoDir config user.email 'bot-data@users.noreply.github.com'
+              git -C $repoDir add -A
+              git -C $repoDir commit -q -m "save $((Get-Date).ToUniversalTime().ToString('s'))Z"
+              git -C $repoDir remote add origin $url
+
+              $ok = $false
+              for ($try = 1; $try -le 3; $try++) {
+                  git -C $repoDir push -q --force origin $branch 2>&1 | Out-Null
+                  if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+                  Start-Sleep -Seconds 3
+              }
+
+              if ($ok) {
+                  $hash | Set-Content $hashFile
+                  Write-Host "💾 Đã lưu $file & hồ sơ phiên máy lên nhánh $branch"
+              } else {
+                  Write-Host '::warning::Lưu dữ liệu lên nhánh bot-data thất bại sau 3 lần thử'
+              }
+              exit 0
+          }
+          '@ | Set-Content -Path "$env:RUNNER_TEMP\sync.ps1" -Encoding UTF8
+
+          & "$env:RUNNER_TEMP\sync.ps1" restore
+          if ($LASTEXITCODE -ne 0) { throw "Khôi phục dữ liệu thất bại, dừng để tránh mất dữ liệu" }
+
+      # 3. TẠO .ENV TỪ .ENV.EXAMPLE + GHI TOKEN
+      - name: ⚙️ Cấu hình .env
+        run: |
+          Set-Location app
+
+          if ([string]::IsNullOrWhiteSpace($env:DISCORD_TOKEN)) {
+              throw "Secret DISCORD_AUTH_KEY đang trống! Vào Settings > Secrets and variables > Actions để thêm."
+          }
+
+          function Set-EnvVar($list, $key, $value) {
+              $pattern = '^\s*' + [regex]::Escape($key) + '\s*='
+              $idx = -1
+              for ($i = 0; $i -lt $list.Count; $i++) {
+                  if ($list[$i] -match $pattern) { $idx = $i; break }
+              }
+              if ($idx -ge 0) { $list[$idx] = "$key=$value" } else { $list.Add("$key=$value") }
+          }
+
+          $list = [System.Collections.Generic.List[string]]::new()
+          if (Test-Path .env.example) {
+              Get-Content .env.example | ForEach-Object { $list.Add($_) }
+          }
+
+          # Ghi đè nguyên dòng (không dùng regex replace nên token chứa ký tự đặc biệt vẫn an toàn)
+          Set-EnvVar $list 'DISCORD_TOKEN' $env:DISCORD_TOKEN
+          Set-EnvVar $list 'PORT' $env:APP_PORT
+          Set-EnvVar $list 'DUCKDNS_DOMAIN' $env:DUCKDNS_DOMAIN
+          Set-EnvVar $list 'BOT_API_SECRET' $env:BOT_API_SECRET
+
+          if (-not [string]::IsNullOrWhiteSpace($env:DUCKDNS_TOKEN)) {
+              Set-EnvVar $list 'DUCKDNS_TOKEN' $env:DUCKDNS_TOKEN
+          }
+
+          if (-not [string]::IsNullOrWhiteSpace($env:ADMIN_PASSWORD)) {
+              Set-EnvVar $list 'ADMIN_PASSWORD' $env:ADMIN_PASSWORD
+          } elseif (-not ($list -match '^\s*ADMIN_PASSWORD\s*=')) {
+              $list.Add('ADMIN_PASSWORD=2008')
+          }
+
+          # Nếu còn chỗ nào dùng placeholder 'BOT-token' thì thay luôn (thay chuỗi thuần)
+          for ($i = 0; $i -lt $list.Count; $i++) {
+              if ($list[$i].Contains('BOT-token')) {
+                  $list[$i] = $list[$i].Replace('BOT-token', $env:DISCORD_TOKEN)
+              }
+          }
+
+          # Ghi UTF-8 không BOM
+          [System.IO.File]::WriteAllLines((Join-Path $PWD '.env'), $list, [System.Text.UTF8Encoding]::new($false))
+
+          # Kiểm tra lại (không in giá trị)
+          if (-not (Select-String -Path .env -Pattern '^DISCORD_TOKEN=.+' -Quiet)) {
+              throw "Ghi DISCORD_TOKEN vào .env thất bại"
+          }
+          Write-Host "✅ Đã tạo .env, các biến hiện có:" -ForegroundColor Green
+          Get-Content .env | ForEach-Object {
+              if ($_ -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=') { Write-Host "   - $($Matches[1]) = ***" }
+          }
+
+      # 3b. TÍCH HỢP MODULE NHẬN FILE TỪ Ổ D:\ CỦA MÁY ẢO + ĐÁNH DẤU IP/MK/TÊN CHO TỪNG PHIÊN + WEB QUẢN LÝ
+      - name: 🧩 Tích hợp RDP Webhook, Nhận File Ổ D:\ & Đánh Dấu Phiên Máy
+        run: |
+          Set-Location app
+          @'
+          // ================= RDP BRIDGE, SESSION FILE RECEIVER & MULTI-GIT WEB MANAGER =================
+          const fs = require('fs');
+          const path = require('path');
+          const http = require('http');
+
+          const DATA_PATH = path.join(process.cwd(), process.env.DATA_FILE || 'data.json');
+          const BRIDGE_FILE = path.join(process.cwd(), 'rdp-bridge-state.json');
+          const SESSION_FILES_DIR = path.join(process.cwd(), 'rdp-session-files');
+
+          try {
+            if (!fs.existsSync(SESSION_FILES_DIR)) fs.mkdirSync(SESSION_FILES_DIR, { recursive: true });
+          } catch {}
+
+          function safeName(s) {
+            return String(s || '').trim().toLowerCase().replace(/[^a-z0-9._-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+          }
+
+          function loadBridgeState() {
+            let st = { accounts: {}, machines: {}, sessions: {}, duckdns: {} };
+            try {
+              if (fs.existsSync(BRIDGE_FILE)) {
+                st = Object.assign(st, JSON.parse(fs.readFileSync(BRIDGE_FILE, 'utf8')));
+              }
+            } catch {}
+            try {
+              if (fs.existsSync(DATA_PATH)) {
+                const d = JSON.parse(fs.readFileSync(DATA_PATH, 'utf8'));
+                if (d && d.shared && d.shared.rdp) {
+                  st.accounts = Object.assign({}, d.shared.rdp.accounts || {}, st.accounts || {});
+                  st.machines = Object.assign({}, d.shared.rdp.machines || {}, st.machines || {});
+                  st.sessions = Object.assign({}, d.shared.rdp.sessions || {}, st.sessions || {});
+                  st.duckdns  = Object.assign({}, d.shared.rdp.duckdns  || {}, st.duckdns  || {});
+                  if (!st.defaultAccount && d.shared.rdp.defaultAccount) st.defaultAccount = d.shared.rdp.defaultAccount;
+                }
+              }
+            } catch {}
+            st.accounts = st.accounts || {};
+            st.machines = st.machines || {};
+            st.sessions = st.sessions || {};
+            st.duckdns  = st.duckdns  || {};
+            return st;
+          }
+
+          function saveBridgeState(rdpObj) {
+            try {
+              fs.writeFileSync(BRIDGE_FILE, JSON.stringify(rdpObj, null, 2), 'utf8');
+            } catch {}
+            try {
+              if (fs.existsSync(DATA_PATH)) {
+                const d = JSON.parse(fs.readFileSync(DATA_PATH, 'utf8'));
+                d.shared = d.shared || {};
+                d.shared.rdp = Object.assign(d.shared.rdp || {}, rdpObj);
+                fs.writeFileSync(DATA_PATH, JSON.stringify(d, null, 2), 'utf8');
+              }
+            } catch {}
+          }
+
+          function checkAuth(req, bodyObj) {
+            const adminPass = process.env.ADMIN_PASSWORD || '2008';
+            const botSecret = process.env.BOT_API_SECRET || adminPass || '2008';
+            const hdr = req.headers['x-admin-password'] || req.headers['x-bot-secret'] || '';
+            const urlObj = new URL(req.url, 'http://localhost');
+            const qPass = urlObj.searchParams.get('pass') || urlObj.searchParams.get('secret') || '';
+            const bPass = (bodyObj && (bodyObj.secret || bodyObj.pass || bodyObj.adminPassword)) || '';
+            const candidates = [hdr, qPass, bPass].filter(Boolean);
+            return candidates.includes(adminPass) || candidates.includes(botSecret);
+          }
+
+          // Hàm dùng chung để lưu file phiên (từ ổ D:\ của máy ảo) & đánh dấu IP, MK, User, Tên máy cho mỗi phiên
+          function recordMachineAndSession(st, payload, txtRaw, jsonRaw) {
+            const id = safeName(payload.machineId || payload.name || '');
+            if (!id) return null;
+
+            const runId = String(payload.runId || (payload.meta && payload.meta.runId) || '').trim();
+            const sessKey = safeName(payload.sessionKey || (payload.meta && payload.meta.sessionKey) || (runId ? `${id}-run-${runId}` : `${id}-latest`));
+
+            st.machines = st.machines || {};
+            st.sessions = st.sessions || {};
+
+            const cur = st.machines[id] = st.machines[id] || { name: id, file: id + '.yml', created: Date.now(), sessions: {} };
+            cur.sessions = cur.sessions || {};
+            cur.lastReportAt = Date.now();
+            cur.currentSessionKey = sessKey;
+
+            const mMeta = payload.meta || payload;
+            if (mMeta.repo || payload.repo) cur.repo = mMeta.repo || payload.repo;
+            if (mMeta.accName || payload.accName) cur.accName = mMeta.accName || payload.accName;
+            if (runId) cur.runId = runId;
+            if (payload.status || mMeta.status) cur.status = payload.status || mMeta.status;
+            if (mMeta.startEpoch) cur.startMs = Number(mMeta.startEpoch) * 1000;
+            if (mMeta.durationMinutes) cur.minutes = Number(mMeta.durationMinutes);
+
+            const ip = payload.tailscaleIp || mMeta.tailscaleIp || payload.ip || (cur.info && cur.info.ip) || '';
+            const user = payload.user || mMeta.user || (cur.info && cur.info.user) || 'runneradmin';
+            const pass = payload.password || mMeta.password || (cur.info && cur.info.pass) || '';
+            const dDrivePath = payload.dDrivePath || mMeta.dDriveTxtPath || mMeta.dDriveFile || `D:\\AISTV-SESSION-INFO\\thong-tin-may-${id}.txt`;
+            const dDriveJsonPath = mMeta.dDriveJsonPath || `D:\\AISTV-SESSION-INFO\\thong-tin-may-${id}.json`;
+
+            // Lưu file vật lý vào thư mục rdp-session-files trên Server Bot
+            const machineDir = path.join(SESSION_FILES_DIR, id);
+            try {
+              if (!fs.existsSync(machineDir)) fs.mkdirSync(machineDir, { recursive: true });
+            } catch {}
+
+            let savedTxtPath = '';
+            let savedJsonPath = '';
+            const finalTxt = txtRaw || mMeta.sessionText || '';
+            const finalJson = jsonRaw || JSON.stringify(mMeta, null, 2);
+
+            try {
+              if (finalTxt) {
+                savedTxtPath = path.join(machineDir, `phien-${sessKey}.txt`);
+                fs.writeFileSync(savedTxtPath, finalTxt, 'utf8');
+                fs.writeFileSync(path.join(machineDir, `thong-tin-may-${id}.txt`), finalTxt, 'utf8');
+              }
+              if (finalJson) {
+                savedJsonPath = path.join(machineDir, `phien-${sessKey}.json`);
+                fs.writeFileSync(savedJsonPath, finalJson, 'utf8');
+                fs.writeFileSync(path.join(machineDir, `thong-tin-may-${id}.json`), finalJson, 'utf8');
+              }
+            } catch {}
+
+            // Cập nhật thông tin hiện tại của máy
+            cur.info = Object.assign(cur.info || {}, {
+              sessionKey: sessKey,
+              machineId: id,
+              repoTag: mMeta.releaseTag || ('aistv-storage-' + id),
+              stateBranch: mMeta.stateBranch || ('aistv-state-' + id),
+              ip,
+              rdpAddress: mMeta.rdpAddress || (ip ? `${ip}:3389` : ''),
+              webPort: mMeta.webPort || '8080',
+              sunshinePort: mMeta.sunshinePort || '47990',
+              sunshine: mMeta.sunshineUrl || (ip ? `https://${ip}:${mMeta.sunshinePort || 47990}/` : ''),
+              panel: mMeta.panelUrl || (ip ? `http://${ip}:${mMeta.webPort || 8080}/` : ''),
+              stardesk: mMeta.stardesk || 'Đang chạy',
+              stardeskId: mMeta.stardeskId || '',
+              user,
+              pass,
+              screen: mMeta.resolution || '1920x1080@60',
+              audio: mMeta.audio || 'VB-Audio Virtual Cable',
+              disk: mMeta.driveLetter ? `${mMeta.driveLetter}:\\ (${mMeta.sharedRoot || ''})` : 'X:\\',
+              diskUsedGb: mMeta.diskUsedGb != null ? mMeta.diskUsedGb : (cur.info && cur.info.diskUsedGb),
+              diskFreeGb: mMeta.diskFreeGb != null ? mMeta.diskFreeGb : (cur.info && cur.info.diskFreeGb),
+              activeApps: mMeta.activeApps || (cur.info && cur.info.activeApps) || [],
+              profile: mMeta.profilePath || 'C:\\Users\\runneradmin',
+              osBuild: mMeta.osBuild || '',
+              windowsImage: mMeta.windowsImage || '',
+              dDrivePath,
+              dDriveJsonPath,
+              botSavedTxtFile: savedTxtPath ? path.basename(savedTxtPath) : (cur.info && cur.info.botSavedTxtFile) || '',
+              botSavedJsonFile: savedJsonPath ? path.basename(savedJsonPath) : (cur.info && cur.info.botSavedJsonFile) || '',
+              sessionText: finalTxt || (cur.info && cur.info.sessionText) || '',
+              startTimeVn: mMeta.startTimeVn || (cur.info && cur.info.startTimeVn) || '',
+              endTimeVn: mMeta.endTimeVn || (cur.info && cur.info.endTimeVn) || '',
+              remainSeconds: mMeta.remainSeconds != null ? Number(mMeta.remainSeconds) : null,
+              remainText: mMeta.remainText || '',
+              eventReason: payload.reason || mMeta.reason || 'heartbeat',
+              updatedUtc: new Date().toISOString()
+            });
+
+            if (cur.info.ip && cur.status !== 'stopped' && cur.status !== 'done') {
+              cur.status = 'ready';
+              cur.infoAt = cur.infoAt || Date.now();
+            }
+
+            // Đánh dấu bản ghi riêng cho từng phiên (Session Tagging: IP, MK, User, Tên máy, RunID, File ổ D)
+            const sessionRecord = Object.assign(cur.sessions[sessKey] || st.sessions[sessKey] || {}, {
+              sessionKey: sessKey,
+              machineId: id,
+              runId: runId || '',
+              repo: cur.repo || '',
+              owner: cur.owner || '',
+              ownerId: cur.ownerId || '',
+              ip,
+              rdpAddress: ip ? `${ip}:3389` : '',
+              user,
+              pass,
+              status: cur.status || 'ready',
+              reason: payload.reason || mMeta.reason || 'update',
+              dDrivePath,
+              dDriveJsonPath,
+              txtFileName: payload.txtFileName || mMeta.sessionFileName || `phien-${sessKey}.txt`,
+              jsonFileName: payload.jsonFileName || mMeta.sessionJsonName || `phien-${sessKey}.json`,
+              sunshineUrl: cur.info.sunshine,
+              panelUrl: cur.info.panel,
+              startEpoch: mMeta.startEpoch || (cur.startMs ? Math.floor(cur.startMs / 1000) : null),
+              startTimeVn: mMeta.startTimeVn || '',
+              endTimeVn: mMeta.endTimeVn || '',
+              remainSeconds: cur.info.remainSeconds,
+              remainText: cur.info.remainText || '',
+              sessionText: finalTxt || (cur.sessions[sessKey] && cur.sessions[sessKey].sessionText) || '',
+              updatedAt: Date.now(),
+              updatedUtc: new Date().toISOString()
+            });
+
+            cur.sessions[sessKey] = sessionRecord;
+            st.sessions[sessKey] = sessionRecord;
+
+            // Giữ tối đa 25 phiên gần nhất trên mỗi máy để tránh phình file JSON
+            const sKeys = Object.keys(cur.sessions).sort((a, b) => (cur.sessions[b].updatedAt || 0) - (cur.sessions[a].updatedAt || 0));
+            if (sKeys.length > 25) {
+              for (const oldKey of sKeys.slice(25)) delete cur.sessions[oldKey];
+            }
+            const allKeys = Object.keys(st.sessions).sort((a, b) => (st.sessions[b].updatedAt || 0) - (st.sessions[a].updatedAt || 0));
+            if (allKeys.length > 120) {
+              for (const oldKey of allKeys.slice(120)) delete st.sessions[oldKey];
+            }
+
+            return { machine: cur, session: sessionRecord };
+          }
+
+          const origCreateServer = http.createServer;
+          http.createServer = function (opts, listener) {
+            if (typeof opts === 'function') { listener = opts; opts = undefined; }
+            const wrapped = function (req, res) {
+              const urlObj = new URL(req.url || '/', 'http://localhost');
+              const u = urlObj.pathname;
+              if (u.startsWith('/api/rdp/') || u === '/rdp-manager') {
+                let raw = '';
+                req.on('data', chunk => { if (raw.length < 5e6) raw += chunk; });
+                req.on('end', async () => {
+                  let body = {};
+                  try { if (raw) body = JSON.parse(raw); } catch {}
+                  const sendJson = (code, obj) => {
+                    res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+                    res.end(JSON.stringify(obj));
+                  };
+
+                  // 1A. NHẬN FILE PHIÊN TỪ Ổ D:\ CỦA MÁY ẢO GỬI VỀ (/api/rdp/upload-file)
+                  if (u === '/api/rdp/upload-file' && req.method === 'POST') {
+                    const id = safeName(body.machineId || (body.meta && body.meta.machineId) || '');
+                    if (!id) return sendJson(400, { ok: false, error: 'Missing machineId' });
+                    let txtDecoded = '';
+                    let jsonDecoded = '';
+                    try {
+                      if (body.txtBase64) txtDecoded = Buffer.from(String(body.txtBase64), 'base64').toString('utf8');
+                    } catch {}
+                    try {
+                      if (body.jsonBase64) jsonDecoded = Buffer.from(String(body.jsonBase64), 'base64').toString('utf8');
+                    } catch {}
+                    const st = loadBridgeState();
+                    const recRes = recordMachineAndSession(st, body, txtDecoded, jsonDecoded);
+                    saveBridgeState(st);
+                    return sendJson(200, {
+                      ok: true,
+                      message: 'Đã nhận file từ ổ D:\\ và đánh dấu phiên máy thành công',
+                      sessionKey: recRes && recRes.session && recRes.session.sessionKey,
+                      machine: recRes && recRes.machine
+                    });
+                  }
+
+                  // 1B. NHẬN THÔNG TIN TỪ CÁC MÁY ẢO (/api/rdp/report)
+                  if (u === '/api/rdp/report' && req.method === 'POST') {
+                    const id = safeName(body.machineId || body.name || '');
+                    if (!id) return sendJson(400, { ok: false, error: 'Missing machineId' });
+                    const st = loadBridgeState();
+                    const recRes = recordMachineAndSession(st, body, body.sessionText || '', '');
+                    saveBridgeState(st);
+                    return sendJson(200, {
+                      ok: true,
+                      sessionKey: recRes && recRes.session && recRes.session.sessionKey,
+                      machine: recRes && recRes.machine
+                    });
+                  }
+
+                  // 1C. XEM / TẢI FILE PHIÊN ĐÃ LƯU TỪ Ổ D:\ CỦA MÁY ẢO (/api/rdp/session-file)
+                  if (u === '/api/rdp/session-file' && req.method === 'GET') {
+                    if (!checkAuth(req, body)) return sendJson(401, { ok: false, error: 'Sai mật khẩu Admin / Secret' });
+                    const mId = safeName(urlObj.searchParams.get('machine') || '');
+                    const sKey = safeName(urlObj.searchParams.get('session') || '');
+                    const fmt = (urlObj.searchParams.get('format') || 'txt').toLowerCase();
+                    const dl = urlObj.searchParams.get('download') === '1';
+                    const st = loadBridgeState();
+
+                    let sess = sKey && st.sessions[sKey] ? st.sessions[sKey] : null;
+                    const mach = mId && st.machines[mId] ? st.machines[mId] : (sess && st.machines[sess.machineId]);
+                    if (!sess && mach) {
+                      sess = (mach.currentSessionKey && mach.sessions && mach.sessions[mach.currentSessionKey])
+                        || (mach.sessions && Object.values(mach.sessions).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0])
+                        || null;
+                    }
+                    const targetMachineId = (mach && mach.name) || (sess && sess.machineId) || mId;
+                    const targetSessKey = (sess && sess.sessionKey) || sKey || (targetMachineId ? `${targetMachineId}-latest` : '');
+
+                    let content = '';
+                    const ext = fmt === 'json' ? 'json' : 'txt';
+                    if (targetMachineId) {
+                      const f1 = path.join(SESSION_FILES_DIR, targetMachineId, `phien-${targetSessKey}.${ext}`);
+                      const f2 = path.join(SESSION_FILES_DIR, targetMachineId, `thong-tin-may-${targetMachineId}.${ext}`);
+                      if (fs.existsSync(f1)) content = fs.readFileSync(f1, 'utf8');
+                      else if (fs.existsSync(f2)) content = fs.readFileSync(f2, 'utf8');
+                    }
+                    if (!content && sess) {
+                      content = ext === 'json' ? JSON.stringify(sess, null, 2) : (sess.sessionText || '');
+                    }
+                    if (!content && mach && mach.info) {
+                      content = ext === 'json' ? JSON.stringify(mach.info, null, 2) : (mach.info.sessionText || '');
+                    }
+                    if (!content) return sendJson(404, { ok: false, error: 'Chưa có file phiên cho máy này' });
+
+                    if (dl) {
+                      const fileName = `phien-${targetSessKey || targetMachineId}.${ext}`;
+                      res.writeHead(200, {
+                        'Content-Type': ext === 'json' ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8',
+                        'Content-Disposition': `attachment; filename="${fileName}"`
+                      });
+                      return res.end(content);
+                    }
+                    return sendJson(200, {
+                      ok: true,
+                      machineId: targetMachineId,
+                      sessionKey: targetSessKey,
+                      session: sess || (mach && mach.info) || {},
+                      content
+                    });
+                  }
+
+                  // 2. API LẤY TRẠNG THÁI CHO WEB QUẢN LÝ & SCRIPT
+                  if (u === '/api/rdp/state' && req.method === 'GET') {
+                    if (!checkAuth(req, body)) return sendJson(401, { ok: false, error: 'Sai mật khẩu Admin' });
+                    return sendJson(200, { ok: true, data: loadBridgeState(), duckdnsDomain: process.env.DUCKDNS_DOMAIN || 'datdemo.duckdns.org', tailscaleIp: process.env.TAILSCALE_IP || '' });
+                  }
+
+                  // 3. API QUẢN LÝ NHIỀU TÀI KHOẢN GIT (TOKEN + REPO) & CÀI ĐẶT DUCKDNS
+                  if (u === '/api/rdp/config' && req.method === 'POST') {
+                    if (!checkAuth(req, body)) return sendJson(401, { ok: false, error: 'Sai mật khẩu Admin' });
+                    const st = loadBridgeState();
+                    st.accounts = st.accounts || {};
+                    st.machines = st.machines || {};
+                    if (body.action === 'add_account') {
+                      const k = String(body.alias || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+                      if (!k || !body.repo || !body.token) return sendJson(400, { ok: false, error: 'Thiếu alias, repo hoặc token' });
+                      st.accounts[k] = {
+                        alias: k,
+                        repo: String(body.repo).trim(),
+                        token: String(body.token).trim(),
+                        branch: String(body.branch || 'main').trim(),
+                        wfDir: String(body.wfDir || '.github/workflows').trim(),
+                        template: String(body.template || 'may3.yml').trim(),
+                        updatedAt: Date.now()
+                      };
+                      if (body.setDefault || !st.defaultAccount) st.defaultAccount = k;
+                    } else if (body.action === 'del_account') {
+                      delete st.accounts[body.alias];
+                      if (st.defaultAccount === body.alias) st.defaultAccount = Object.keys(st.accounts)[0] || '';
+                    } else if (body.action === 'set_default_account') {
+                      if (st.accounts[body.alias]) st.defaultAccount = body.alias;
+                    } else if (body.action === 'assign_machine') {
+                      const mName = String(body.machine || '').trim().toLowerCase();
+                      if (mName) {
+                        st.machines[mName] = st.machines[mName] || { name: mName, file: mName + '.yml', created: Date.now() };
+                        st.machines[mName].ownerId = String(body.ownerId || '').trim();
+                        st.machines[mName].owner = String(body.ownerName || body.ownerId || '').trim();
+                        if (body.accName) st.machines[mName].accName = body.accName;
+                      }
+                    } else if (body.action === 'set_duckdns') {
+                      st.duckdns = { domain: String(body.domain || 'datdemo.duckdns.org').trim(), token: String(body.token || '').trim(), updatedAt: Date.now() };
+                    }
+                    saveBridgeState(st);
+                    return sendJson(200, { ok: true, data: st });
+                  }
+
+                  // 4. API GỬI LỆNH TRỰC TIẾP VỀ IP MÁY ẢO
+                  if (u === '/api/rdp/vm-cmd' && req.method === 'POST') {
+                    if (!checkAuth(req, body)) return sendJson(401, { ok: false, error: 'Sai mật khẩu Admin' });
+                    const st = loadBridgeState();
+                    const m = (st.machines || {})[body.machine];
+                    const ip = body.ip || (m && m.info && m.info.ip);
+                    const port = body.port || (m && m.info && m.info.webPort) || '8080';
+                    if (!ip) return sendJson(400, { ok: false, error: 'Máy chưa có IP' });
+                    try {
+                      const vmRes = await fetch(`http://${ip}:${port}/api/cmd`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ cmd: body.cmd, text: body.text || '' }),
+                        signal: AbortSignal.timeout(10000)
+                      });
+                      const vmJson = await vmRes.json();
+                      return sendJson(200, { ok: true, vm: vmJson });
+                    } catch (err) {
+                      return sendJson(502, { ok: false, error: String(err.message || err) });
+                    }
+                  }
+
+                  // 5. GIAO DIỆN WEB QUẢN LÝ ĐA TÀI KHOẢN GIT, MÁY ẢO, FILE PHIÊN Ổ D:\ & DUCKDNS
+                  if (u === '/rdp-manager') {
+                    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+                    return res.end(`<!DOCTYPE html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+                    <title>Quản Lý RDP, File Phiên Ổ D:\\ & Đa Acc Git</title>
+                    <style>
+                      *{box-sizing:border-box;font-family:Segoe UI,sans-serif}
+                      body{background:#0f172a;color:#f8fafc;margin:0;padding:20px}
+                      .wrap{max-width:1200px;margin:0 auto}
+                      .card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:18px;margin-bottom:18px}
+                      h1,h2{margin:0 0 12px 0;color:#38bdf8}
+                      input,select,button{padding:8px 11px;border-radius:8px;border:1px solid #475569;background:#0f172a;color:#fff;margin:3px;font-size:13px}
+                      button{background:#0284c7;border:none;cursor:pointer;font-weight:600}
+                      button.warn{background:#d97706} button.danger{background:#dc2626} button.sec{background:#475569}
+                      table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}
+                      th,td{border-bottom:1px solid #334155;padding:8px;text-align:left;vertical-align:top}
+                      .badge{padding:3px 8px;border-radius:6px;background:#065f46;font-size:12px}
+                      pre{background:#0f172a;border:1px solid #334155;padding:12px;border-radius:8px;overflow:auto;max-height:360px;color:#a7f3d0;font-size:12px}
+                    </style></head><body><div class="wrap">
+                      <div class="card">
+                        <h1>🎛️ Trung Tâm Quản Lý RDP, File Phiên Ổ D:\\ & Đa Acc GitHub</h1>
+                        <div>Mật khẩu Admin: <input type="password" id="pass" placeholder="Nhập ADMIN_PASSWORD"> <button onclick="loadAll()">🔄 Tải Dữ Liệu</button> <span id="msg"></span></div>
+                      </div>
+                      <div class="card">
+                        <h2>1. Quản Lý Nhiều Tài Khoản GitHub (Token & Repo)</h2>
+                        <div>
+                          <input id="acc_alias" placeholder="Tên gợi nhớ (VD: acc1)">
+                          <input id="acc_repo" placeholder="owner/repo (VD: user/rdp-repo)">
+                          <input id="acc_token" type="password" placeholder="PAT Token (ghp_...)">
+                          <input id="acc_branch" placeholder="Nhánh (main)" value="main" style="width:90px">
+                          <input id="acc_tpl" placeholder="File mẫu (may3.yml)" value="may3.yml" style="width:130px">
+                          <button onclick="addAcc()">➕ Lưu Tài Khoản Git</button>
+                        </div>
+                        <table id="tbl_acc"><thead><tr><th>Alias</th><th>Repo</th><th>Nhánh</th><th>Mẫu</th><th>Mặc định</th><th>Thao tác</th></tr></thead><tbody></tbody></table>
+                      </div>
+                      <div class="card">
+                        <h2>2. Gán / Đánh Dấu ID Máy Cho Người Dùng Discord</h2>
+                        <div>
+                          <input id="as_machine" placeholder="Tên máy (VD: may-phu-2)">
+                          <input id="as_uid" placeholder="Discord User ID">
+                          <input id="as_uname" placeholder="Tên hiển thị">
+                          <input id="as_acc" placeholder="Alias Acc Git (tùy chọn)">
+                          <button onclick="assignMachine()">🏷️ Gán Quyền Máy</button>
+                        </div>
+                      </div>
+                      <div class="card">
+                        <h2>3. Danh Sách Máy Ảo, Đánh Dấu Phiên & File Gửi Về Từ Ổ D:\\</h2>
+                        <table id="tbl_vm"><thead><tr><th>ID Máy / Mã Phiên</th><th>Repo / Chủ máy</th><th>IP Tailscale</th><th>User / Mật khẩu</th><th>File Ổ D:\\ & Trạng thái</th><th>Điều khiển & Tải File Phiên</th></tr></thead><tbody></tbody></table>
+                      </div>
+                      <div class="card" id="box_file" style="display:none">
+                        <h2>📄 Nội Dung File Phiên Gửi Về Từ Ổ D:\\ (<span id="lbl_file"></span>)</h2>
+                        <pre id="pre_file"></pre>
+                      </div>
+                    </div>
+                    <script>
+                      const P = () => document.getElementById('pass').value;
+                      async function api(path, method='GET', body=null) {
+                        const sep = path.includes('?') ? '&' : '?';
+                        const r = await fetch(path + sep + 'pass=' + encodeURIComponent(P()), {
+                          method, headers: {'Content-Type':'application/json','x-admin-password':P()},
+                          body: body ? JSON.stringify(body) : undefined
+                        });
+                        return await r.json();
+                      }
+                      async function loadAll() {
+                        const j = await api('/api/rdp/state');
+                        if (!j.ok) { document.getElementById('msg').innerText = '❌ ' + j.error; return; }
+                        document.getElementById('msg').innerText = '✅ Đã đồng bộ | DuckDNS: ' + j.duckdnsDomain + ' (' + j.tailscaleIp + ')';
+                        const accs = j.data.accounts || {};
+                        const def = j.data.defaultAccount || '';
+                        document.querySelector('#tbl_acc tbody').innerHTML = Object.values(accs).map(a => \`
+                          <tr><td><b>\${a.alias}</b></td><td>\${a.repo}</td><td>\${a.branch}</td><td>\${a.template}</td>
+                          <td>\${a.alias===def?'<span class="badge">Mặc định</span>':\`<button onclick="setDef('\${a.alias}')">Chọn</button>\`}</td>
+                          <td><button class="danger" onclick="delAcc('\${a.alias}')">Xóa</button></td></tr>\`).join('');
+                        const vms = j.data.machines || {};
+                        document.querySelector('#tbl_vm tbody').innerHTML = Object.values(vms).map(m => {
+                          const i = m.info || {};
+                          const rem = i.remainSeconds != null ? Math.floor(i.remainSeconds/3600)+'h '+Math.floor((i.remainSeconds%3600)/60)+'m' : '?';
+                          const sCount = m.sessions ? Object.keys(m.sessions).length : 0;
+                          return \`<tr>
+                            <td><b>\${m.name}</b><br><small>Phiên: <code>\${m.currentSessionKey||i.sessionKey||'-'}</code></small><br><small>Run: \${m.runId||'-'} (\${sCount} phiên đã lưu)</small></td>
+                            <td>\${m.repo||'-'} (\${m.accName||'default'})<br><small>Chủ: \${m.owner||'-'} (\${m.ownerId||''})</small></td>
+                            <td><code>\${i.ip||'-'}</code><br><small><a href="\${i.panel||'#'}" target="_blank" style="color:#38bdf8">Web 8080</a> | <a href="\${i.sunshine||'#'}" target="_blank" style="color:#facc15">Sunshine</a></small></td>
+                            <td>User: <code>\${i.user||'runneradmin'}</code><br>MK: <code>\${i.pass||'***'}</code></td>
+                            <td><b>\${m.status||'-'}</b> (Còn: \${rem})<br><small>Ổ D: <code>\${i.dDrivePath||'D:\\\\AISTV-SESSION-INFO'}</code></small></td>
+                            <td>
+                              <button onclick="viewFile('\${m.name}')">📄 Xem File Ổ D</button>
+                              <button class="sec" onclick="dlFile('\${m.name}','txt')">⬇️ Tải .TXT</button>
+                              <button class="sec" onclick="vmCmd('\${m.name}','syncfile')">🔄 Đồng bộ lại File D</button><br>
+                              <button onclick="vmCmd('\${m.name}','ping')">🔍 Check</button>
+                              <button onclick="vmCmd('\${m.name}','save')">💾 Lưu</button>
+                              <button class="warn" onclick="vmCmd('\${m.name}','restart')">🔁 Restart</button>
+                              <button class="danger" onclick="vmCmd('\${m.name}','stop')">🛑 Tắt</button>
+                            </td>
+                          </tr>\`;
+                        }).join('');
+                      }
+                      async function viewFile(machine) {
+                        const j = await api('/api/rdp/session-file?machine=' + encodeURIComponent(machine));
+                        if (!j.ok) return alert(j.error || 'Chưa có file');
+                        document.getElementById('box_file').style.display = 'block';
+                        document.getElementById('lbl_file').innerText = j.sessionKey + ' - ' + (j.session && j.session.dDrivePath || '');
+                        document.getElementById('pre_file').innerText = j.content;
+                      }
+                      function dlFile(machine, fmt) {
+                        window.open('/api/rdp/session-file?machine=' + encodeURIComponent(machine) + '&format=' + fmt + '&download=1&pass=' + encodeURIComponent(P()), '_blank');
+                      }
+                      async function addAcc() {
+                        await api('/api/rdp/config','POST',{action:'add_account',alias:acc_alias.value,repo:acc_repo.value,token:acc_token.value,branch:acc_branch.value,template:acc_tpl.value});
+                        loadAll();
+                      }
+                      async function delAcc(alias) { await api('/api/rdp/config','POST',{action:'del_account',alias}); loadAll(); }
+                      async function setDef(alias) { await api('/api/rdp/config','POST',{action:'set_default_account',alias}); loadAll(); }
+                      async function assignMachine() {
+                        await api('/api/rdp/config','POST',{action:'assign_machine',machine:as_machine.value,ownerId:as_uid.value,ownerName:as_uname.value,accName:as_acc.value});
+                        loadAll();
+                      }
+                      async function vmCmd(machine, cmd) {
+                        const r = await api('/api/rdp/vm-cmd','POST',{machine,cmd});
+                        alert(JSON.stringify(r, null, 2));
+                        loadAll();
+                      }
+                    </script></body></html>`);
+                  }
+                });
+                return;
+              }
+              if (listener) return listener.call(this, req, res);
+            };
+            return opts ? origCreateServer.call(this, opts, wrapped) : origCreateServer.call(this, wrapped);
+          };
+          '@ | Set-Content -Path "rdp-bridge.js" -Encoding UTF8
+
+          if (Test-Path "index.js") {
+              $idxContent = Get-Content "index.js" -Raw
+              if ($idxContent -notmatch "rdp-bridge\.js") {
+                  $patchedIdx = "require('./rdp-bridge.js');`r`n" + $idxContent
+                  [System.IO.File]::WriteAllText((Join-Path $PWD "index.js"), $patchedIdx, [System.Text.UTF8Encoding]::new($false))
+                  Write-Host "✅ Đã gắn rdp-bridge.js vào index.js" -ForegroundColor Green
+              }
+          }
+
+      # 4. MỞ FIREWALL CHO CỔNG
+      - name: 🔓 Mở cổng firewall
+        run: |
+          netsh advfirewall firewall add rule name="BotApp-In" dir=in action=allow protocol=TCP localport=$env:APP_PORT profile=any
+
+      # 5. TAILSCALE
+      - name: 🌐 Thiết lập Tailscale
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          $msiPath = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile $msiPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$msiPath`"", "/quiet", "/norestart" -Wait
+          Start-Sleep -Seconds 10
+
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=bot-cuadat-$env:GITHUB_RUN_ID --accept-routes --reset
+
+          $ip = $null
+          for ($i = 0; $i -lt 20; $i++) {
+              $ip = (& "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 2>&1) | Select-Object -First 1
+              if ($ip -match '^\d+\.\d+\.\d+\.\d+$') { break }
+              Start-Sleep -Seconds 3
+          }
+          if ($ip -notmatch '^\d+\.\d+\.\d+\.\d+$') { $ip = "localhost" }
+          "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
+          Write-Host "✅ Tailscale IP: $ip" -ForegroundColor Green
+
+      # 5b. TẢI & CÀI TIẾN TRÌNH DUCKDNS TRỎ IP VỀ datdemo.duckdns.org
+      - name: 🦆 Cài đặt tiến trình DuckDNS & Trỏ IP về datdemo.duckdns.org
+        shell: pwsh
+        run: |
+          $rawDomain = ("$env:DUCKDNS_DOMAIN").Trim().ToLower()
+          if ([string]::IsNullOrWhiteSpace($rawDomain)) { $rawDomain = "datdemo.duckdns.org" }
+          $subDomain = $rawDomain -replace '\.duckdns\.org$', ''
+          "DUCKDNS_SUBDOMAIN=$subDomain" >> $env:GITHUB_ENV
+          "DUCKDNS_FULL_DOMAIN=$subDomain.duckdns.org" >> $env:GITHUB_ENV
+
+          # Tự động tìm DUCKDNS_TOKEN từ secret hoặc trong data.json nếu đã lưu trên web
+          $duckToken = ("$env:DUCKDNS_TOKEN").Trim()
+          if ([string]::IsNullOrWhiteSpace($duckToken) -and (Test-Path "app\data.json")) {
+              try {
+                  $dJson = Get-Content "app\data.json" -Raw | ConvertFrom-Json
+                  if ($dJson.shared.rdp.duckdns.token) {
+                      $duckToken = $dJson.shared.rdp.duckdns.token
+                  }
+              } catch {}
+          }
+
+          $duckDir = Join-Path $env:RUNNER_TEMP "duckdns"
+          New-Item -ItemType Directory -Force -Path $duckDir | Out-Null
+          $duckScript = Join-Path $duckDir "duckdns-updater.ps1"
+
+          @'
+          param(
+              [string]$SubDomain,
+              [string]$Token,
+              [string]$IpMode,
+              [string]$TailscaleIp,
+              [switch]$Loop
+          )
+          $ErrorActionPreference = 'Continue'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+          function Update-DuckDnsNow {
+              $curTok = $Token
+              if ([string]::IsNullOrWhiteSpace($curTok)) {
+                  $dataFile = Join-Path $env:GITHUB_WORKSPACE "app\data.json"
+                  if (Test-Path $dataFile) {
+                      try {
+                          $dj = Get-Content $dataFile -Raw | ConvertFrom-Json
+                          if ($dj.shared.rdp.duckdns.token) { $curTok = $dj.shared.rdp.duckdns.token }
+                      } catch {}
+                  }
+              }
+              if ([string]::IsNullOrWhiteSpace($curTok)) {
+                  Write-Host "⚠️ [DuckDNS] Chưa có DUCKDNS_TOKEN (thêm vào GitHub Secrets DUCKDNS_TOKEN hoặc dùng lệnh !may duck <token>)" -ForegroundColor Yellow
+                  return
+              }
+
+              $targetIp = $TailscaleIp
+              if ($IpMode -eq 'public' -or [string]::IsNullOrWhiteSpace($targetIp) -or $targetIp -eq 'localhost') {
+                  try {
+                      $targetIp = (Invoke-RestMethod -Uri "https://api.ipify.org" -TimeoutSec 10).Trim()
+                  } catch {
+                      $targetIp = ""
+                  }
+              }
+
+              $url = "https://www.duckdns.org/update?domains=$SubDomain&token=$curTok&ip=$targetIp&verbose=true"
+              try {
+                  $res = Invoke-RestMethod -Uri $url -Method Get -TimeoutSec 15
+                  $lines = ($res -split "`r?`n")
+                  Write-Host "🦆 [DuckDNS] Cập nhật $SubDomain.duckdns.org -> $targetIp : $($lines[0])" -ForegroundColor Green
+              } catch {
+                  Write-Host "⚠️ [DuckDNS] Lỗi cập nhật: $($_.Exception.Message)" -ForegroundColor Yellow
+              }
+          }
+
+          Update-DuckDnsNow
+          if ($Loop) {
+              while ($true) {
+                  Start-Sleep -Seconds 180
+                  Update-DuckDnsNow
+              }
+          }
+          '@ | Set-Content -Path $duckScript -Encoding UTF8
+
+          # Chạy cập nhật ngay lập tức
+          & pwsh.exe -NoProfile -File $duckScript -SubDomain $subDomain -Token $duckToken -IpMode $env:DUCKDNS_IP_MODE -TailscaleIp $env:TAILSCALE_IP
+          # Khởi chạy tiến trình nền duy trì cập nhật DuckDNS mỗi 3 phút
+          Start-Process pwsh.exe -ArgumentList "-NoProfile", "-WindowStyle", "Hidden", "-File", "`"$duckScript`"", "-SubDomain", $subDomain, "-Token", "`"$duckToken`"", "-IpMode", $env:DUCKDNS_IP_MODE, "-TailscaleIp", $env:TAILSCALE_IP, "-Loop"
+          Write-Host "✅ Tiến trình nền DuckDNS ($subDomain.duckdns.org) đã khởi chạy!" -ForegroundColor Green
+
+      # 6. CHẠY npm start + GIỮ PHIÊN + LƯU DỮ LIỆU ĐỊNH KỲ
+      - name: ▶️ npm start & duy trì
+        id: run
+        env:
+          PORT: ${{ inputs.port }}
+          DURATION: ${{ inputs.duration }}
+        run: |
+          # --- Đổi "5h30m" / "3h" / "1h" thành số phút (mặc định 330 nếu không đọc được) ---
+          $totalMinutes = 330
+          if ($env:DURATION -match '^\s*(?:(\d+)h)?\s*(?:(\d+)m)?\s*$') {
+              $h = if ($Matches[1]) { [int]$Matches[1] } else { 0 }$m = if ($Matches[2]) { [int]$Matches[2] } else { 0 }
+              if (($h * 60 + $m) -gt 0) {$totalMinutes = $h * 60 +$m }
+          }
+
+          # --- Tính giờ kết thúc theo UTC từ lúc job bắt đầu (không lỗi khi qua nửa đêm) ---
+          # Tối đa 335 phút vì job timeout = 340 phút
+          $jobStart = [DateTimeOffset]::FromUnixTimeSeconds([long]$env:JOB_START)$endTime  = $jobStart.AddMinutes([math]::Min($totalMinutes, 335))
+
+          # Hiển thị giờ Việt Nam kèm ngày
+          try   { $tz = [TimeZoneInfo]::FindSystemTimeZoneById('SE Asia Standard Time') }
+          catch { $tz = [TimeZoneInfo]::Utc }
+          function Format-Vn($t) { [TimeZoneInfo]::ConvertTime($t,$tz).ToString('dd/MM/yyyy HH:mm:ss') }
+
+          $appDir = Join-Path$PWD "app"
+          function Start-App {
+              Start-Process -FilePath "npm.cmd" -ArgumentList "start" `
+                  -WorkingDirectory $appDir `
+                  -RedirectStandardOutput "$env:TEMP\app.out.log" `
+                  -RedirectStandardError  "$env:TEMP\app.err.log" `
+                  -PassThru
+          }
+
+          $proc = Start-App
+          Start-Sleep -Seconds 8
+
+          Write-Host ""
+          Write-Host "┌────────────────────────────────────────────────────────────┐" -ForegroundColor Cyan
+          Write-Host "│ 🎉 BOT ĐANG CHẠY" -ForegroundColor Cyan
+          Write-Host "│ 🌐 Truy cập IP     : http://$($env:TAILSCALE_IP):$($env:APP_PORT)" -ForegroundColor White
+          Write-Host "│ 🦆 Truy cập DuckDNS: http://$($env:DUCKDNS_FULL_DOMAIN):$($env:APP_PORT)" -ForegroundColor Yellow
+          Write-Host "│ 🎛️ Quản lý RDP/Git : http://$($env:DUCKDNS_FULL_DOMAIN):$($env:APP_PORT)/rdp-manager" -ForegroundColor Green
+          Write-Host "│ 📡 Nhận Báo Cáo VM : http://$($env:DUCKDNS_FULL_DOMAIN):$($env:APP_PORT)/api/rdp/report" -ForegroundColor Green
+          Write-Host "│ 📁 Nhận File Ổ D   : http://$($env:DUCKDNS_FULL_DOMAIN):$($env:APP_PORT)/api/rdp/upload-file" -ForegroundColor Green
+          Write-Host "│ ⏰ Kết thúc        : $(Format-Vn$endTime) (giờ VN)" -ForegroundColor White
+          Write-Host "└────────────────────────────────────────────────────────────┘" -ForegroundColor Cyan
+
+          $saveEvery = [int]$env:SAVE_EVERY_MINUTES
+          $lastLog  = [DateTimeOffset]::UtcNow$lastSave = [DateTimeOffset]::UtcNow
+          while ([DateTimeOffset]::UtcNow -lt $endTime) {
+              # Tự khởi động lại nếu app chết
+              if ($proc.HasExited) {
+                  Write-Host "[$(Format-Vn ([DateTimeOffset]::UtcNow))] ⚠️ App dừng, khởi động lại..." -ForegroundColor Yellow
+                  $proc = Start-App
+              }
+
+              # In log app mỗi 60 giây
+              if (([DateTimeOffset]::UtcNow - $lastLog).TotalSeconds -ge 60) {
+                  Write-Host "----- log gần nhất -----" -ForegroundColor DarkGray
+                  Get-Content "$env:TEMP\app.out.log" -Tail 10 -ErrorAction SilentlyContinue
+                  Get-Content "$env:TEMP\app.err.log" -Tail 5  -ErrorAction SilentlyContinue
+                  $left = [math]::Floor(($endTime - [DateTimeOffset]::UtcNow).TotalMinutes)
+                  Write-Host "⏳ Còn khoảng $left phút | DuckDNS: $($env:DUCKDNS_FULL_DOMAIN) -> $($env:TAILSCALE_IP)" -ForegroundColor Blue
+                  $lastLog = [DateTimeOffset]::UtcNow
+              }
+
+              # Lưu dữ liệu định kỳ
+              if (([DateTimeOffset]::UtcNow - $lastSave).TotalMinutes -ge$saveEvery) {
+                  & "$env:RUNNER_TEMP\sync.ps1" save
+                  $lastSave = [DateTimeOffset]::UtcNow
+              }
+
+              Start-Sleep -Seconds 10
+          }
+
+          Write-Host "🎯 HẾT THỜI GIAN PHIÊN NÀY!" -ForegroundColor Red
+          exit 0
+
+      # 7. DỌN DẸP (dừng bot trước rồi mới lưu lần cuối để file không bị ghi dở)
+      - name: 🧹 Dọn dẹp
+        if: always()
+        run: |
+          Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+
+          if (Test-Path "$env:RUNNER_TEMP\sync.ps1") {
+              & "$env:RUNNER_TEMP\sync.ps1" save
+          }
+
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" down 2>$null
+          netsh advfirewall firewall delete rule name="BotApp-In" 2>$null
+          Write-Host "🎉 Dọn dẹp hoàn tất!" -ForegroundColor Green
+          exit 0
+
+      # 8. TỰ CHẠY LẠI PHIÊN MỚI (chỉ khi phiên vừa rồi chạy hết giờ bình thường, không phải bị hủy/lỗi)
+      - name: 🔁 Kích hoạt phiên tiếp theo
+        if: ${{ always() && inputs.auto_restart && steps.run.outcome == 'success' }}
+        env:
+          GH_REPO: ${{ github.repository }}
+          DURATION: ${{ inputs.duration }}
+        run: |
+          $wf = [System.IO.Path]::GetFileName(($env:GITHUB_WORKFLOW_REF -split '@')[0])
+          Write-Host "Chạy lại workflow: $wf (ref:$env:GITHUB_REF_NAME)"
+          gh workflow run $wf --ref$env:GITHUB_REF_NAME -f duration=$env:DURATION -f port=$env:APP_PORT -f auto_restart=true -f duckdns_domain=$env:DUCKDNS_DOMAIN -f duckdns_ip_mode=$env:DUCKDNS_IP_MODE
+          if ($LASTEXITCODE -ne 0) { throw "Không kích hoạt được phiên mới" }
+          Write-Host "✅ Đã kích hoạt phiên tiếp theo" -ForegroundColor Green
