@@ -1,0 +1,16 @@
+{
+  "machineId": "test123",
+  "releaseTag": "aistv-storage-test123",
+  "user": "runneradmin",
+  "sid": "S-1-5-21-3213014087-2684668049-2838998412-500",
+  "password": null,
+  "passwordSource": "secret",
+  "windowsImage": "windows-2022",
+  "osBuild": "20348",
+  "driveLetter": "X",
+  "tailscaleIp": "100.72.111.88",
+  "durationMinutes": 300,
+  "startUtc": "2026-10-17T18:09:05.570937Z",
+  "runId": "39056722878",
+  "lastUpdatedUtc": "2026-10-17T18:18:14.0809529Z"
+}
