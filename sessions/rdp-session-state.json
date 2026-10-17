@@ -1,0 +1,16 @@
+{
+  "machineId": "nhucax",
+  "releaseTag": "aistv-storage-nhucax",
+  "user": "runneradmin",
+  "sid": "S-1-5-21-3213014087-2684668049-2838998412-500",
+  "password": null,
+  "passwordSource": "secret",
+  "windowsImage": "windows-2022",
+  "osBuild": "20348",
+  "driveLetter": "X",
+  "tailscaleIp": "100.123.49.18",
+  "durationMinutes": 300,
+  "startUtc": "2026-10-17T14:02:14.7301953Z",
+  "runId": "39038882087",
+  "lastUpdatedUtc": "2026-10-17T15:49:39.7496303Z"
+}
