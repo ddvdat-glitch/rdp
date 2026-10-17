@@ -1,0 +1,16 @@
+{
+  "machineId": "bakhidangcap",
+  "releaseTag": "aistv-storage-bakhidangcap",
+  "user": "runneradmin",
+  "sid": "S-1-5-21-3213014087-2684668049-2838998412-500",
+  "password": null,
+  "passwordSource": "secret",
+  "windowsImage": "windows-2022",
+  "osBuild": "20348",
+  "driveLetter": "X",
+  "tailscaleIp": "100.95.59.10",
+  "durationMinutes": 300,
+  "startUtc": "2026-10-17T10:15:37.9824247Z",
+  "runId": "39024071485",
+  "lastUpdatedUtc": "2026-10-17T10:25:25.4271720Z"
+}
