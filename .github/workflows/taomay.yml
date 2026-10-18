@@ -86,6 +86,7 @@ jobs:
 
     env:
       # Token & Repo Gốc (nơi chứa bot.yml và lưu trữ toàn bộ Release/State ổ đĩa)
+      GH_TOKEN: ${{ secrets.STORAGE_GH_TOKEN || secrets.STORAGE_PAT_TOKEN || secrets.GH_PAT_CROSS_REPO || secrets.PAT_TOKEN || secrets.GH_TOKEN || github.token }}
       STORAGE_GH_TOKEN: ${{ secrets.STORAGE_GH_TOKEN || secrets.STORAGE_PAT_TOKEN || secrets.GH_PAT_CROSS_REPO || secrets.PAT_TOKEN || secrets.GH_TOKEN || github.token }}
       STORAGE_REPO: ${{ inputs.storage_repo || secrets.STORAGE_REPO || 'ddvdat-glitch/rdp' }}
       # Token & Repo Runner hiện tại ("acc kia" chỉ treo máy)
@@ -230,8 +231,12 @@ jobs:
           $scriptLines = @(
               'param([string]$Reason = "session-end")',
               '$ErrorActionPreference = "Continue";',
-              'if (("$env:DATA_RESTORED" -ne "1") -or ("$env:SESSION_READY" -ne "1")) {',
-              '    Write-Host "⚠️ Phiên chưa khởi tạo hoàn chỉnh, bỏ qua lưu để bảo vệ dữ liệu gốc trên GitHub" -ForegroundColor Yellow;',
+              'if ("$env:STORAGE_GH_TOKEN") {',
+              '    $env:GH_TOKEN = "$env:STORAGE_GH_TOKEN";',
+              '    $env:GITHUB_TOKEN = "$env:STORAGE_GH_TOKEN";',
+              '}',
+              'if ("$env:DATA_RESTORED" -ne "1") {',
+              '    Write-Host "⚠️ Ổ đĩa chưa được khởi tạo hoàn tất, bỏ qua lưu" -ForegroundColor Yellow;',
               '    exit 0;',
               '}',
               '$root  = "$env:SHARED_ROOT";',
@@ -241,17 +246,18 @@ jobs:
               '    Write-Host "ℹ️ Chưa thấy ổ đĩa chung, bỏ qua";',
               '    exit 0;',
               '}',
-              'Write-Host "💾 [$Reason] Đang đóng an toàn các trình duyệt & StarDesk để nhả khóa file..." -ForegroundColor Cyan;',
-              '$appsToClose = @("chrome", "msedge", "brave", "firefox", "coccoc", "opera", "vivaldi", "discord", "Telegram", "Zalo", "steam", "EpicGamesLauncher", "Spotify", "Code", "Notion", "StarDesk");',
+              'Write-Host "💾 [$Reason] Đang đóng an toàn các trình duyệt, GameViewer & StarDesk để nhả khóa file..." -ForegroundColor Cyan;',
+              '$appsToClose = @("chrome", "msedge", "brave", "firefox", "coccoc", "opera", "vivaldi", "discord", "Telegram", "Zalo", "steam", "EpicGamesLauncher", "Spotify", "Code", "Notion", "StarDesk", "GameViewer", "GameViewerServer", "GameViewerHealthd");',
               'Get-Process -Name $appsToClose -ErrorAction SilentlyContinue | ForEach-Object {',
               '    $null = $_.CloseMainWindow();',
               '};',
               'Start-Sleep -Seconds 3;',
               'Get-Process -Name $appsToClose -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;',
               'if ("$Reason" -eq "session-end") {',
-              '    Get-Service -Name "*StarDesk*" -ErrorAction SilentlyContinue | Stop-Service -Force -ErrorAction SilentlyContinue;',
-              '    Get-Process -Name "StarDesk*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;',
+              '    Get-Service -Name "*StarDesk*", "*GameViewer*" -ErrorAction SilentlyContinue | Stop-Service -Force -ErrorAction SilentlyContinue;',
+              '    Get-Process -Name "StarDesk*", "GameViewer*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;',
               '    & taskkill.exe /F /IM "StarDesk*" /T *> $null;',
+              '    & taskkill.exe /F /IM "GameViewer*" /T *> $null;',
               '}',
               'Start-Sleep -Seconds 2;',
               '',
@@ -512,18 +518,13 @@ jobs:
           }
 
           if ($isFirstRun) {
-              Write-Host "ℹ️ Máy [$env:MACHINE_ID] chưa có bản lưu riêng trên Repo Gốc [$env:STORAGE_REPO]!" -ForegroundColor Cyan;
-              Write-Host "🔄 ĐÂY LÀ LẦN ĐẦU TẠO MÁY: Đang lấy chung ổ gốc từ [$env:ROOT_RELEASE_TAG] (nhánh $env:ROOT_STATE_BRANCH) trên Repo Gốc..." -ForegroundColor Green;
-              $sourceTag = "$env:ROOT_RELEASE_TAG";
-              $sourceBranch = "$env:ROOT_STATE_BRANCH";
-
-              gh release download "$sourceTag" --repo "$env:STORAGE_REPO" --pattern 'drive-manifest.json' --dir "$dlDir" 2>$null;
-              $manifestFile = [System.IO.Path]::Combine("$dlDir", 'drive-manifest.json');
-          }
-
-          if (-not (Test-Path "$manifestFile")) {
-              Write-Host "ℹ️ Chưa tìm thấy ổ gốc tại [$sourceTag] trên Repo Gốc [$env:STORAGE_REPO]. Khởi tạo ổ đĩa sạch mới cho [$env:MACHINE_ID]..." -ForegroundColor Yellow;
+              Write-Host "ℹ️ Máy [$env:MACHINE_ID] là máy mới tạo! Bắt đầu với ổ đĩa sạch độc lập (không kế thừa từ ổ gốc)..." -ForegroundColor Cyan;
+              $dummy = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'init.txt');
+              Set-Content -Path "$dummy" -Value "AI-STV Persistent Storage Initialized for $env:MACHINE_ID" -Encoding UTF8;
+              gh release create "$env:RELEASE_TAG" "$dummy" --repo "$env:STORAGE_REPO" --title "AI-STV Storage ($env:MACHINE_ID)" --notes "Kho lưu trữ ổ đĩa độc lập của máy [$env:MACHINE_ID]";
               'DATA_RESTORED=1' >> "$env:GITHUB_ENV";
+              'SESSION_READY=1' >> "$env:GITHUB_ENV";
+              Write-Host "✅ Đã khởi tạo kho lưu riêng [$env:RELEASE_TAG] trên Repo Gốc [$env:STORAGE_REPO]!" -ForegroundColor Green;
           } else {
               $manifest = Get-Content -Raw -Path "$manifestFile" | ConvertFrom-Json;
               Write-Host "⬇️  Đang tải ổ đĩa từ [$sourceTag] trên Repo Gốc ($($manifest.chunkCount) mảnh, cập nhật lúc $($manifest.updatedUtc))..." -ForegroundColor Cyan;
@@ -622,15 +623,8 @@ jobs:
                   } catch {}
               }
 
-              # Nếu đây là lần đầu tạo máy, tạo sẵn Release riêng của máy trên Repo Gốc
-              if ($isFirstRun) {
-                  $dummy = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'init.txt');
-                  Set-Content -Path "$dummy" -Value "AI-STV Persistent Storage Initialized for $env:MACHINE_ID from $sourceTag" -Encoding UTF8;
-                  gh release create "$env:RELEASE_TAG" "$dummy" --repo "$env:STORAGE_REPO" --title "AI-STV Storage ($env:MACHINE_ID)" --notes "Kho lưu trữ ổ đĩa máy [$env:MACHINE_ID] kế thừa từ [$sourceTag]";
-                  Write-Host "✅ Đã khởi tạo kho lưu riêng [$env:RELEASE_TAG] trên Repo Gốc [$env:STORAGE_REPO]!" -ForegroundColor Green;
-              }
-
               'DATA_RESTORED=1' >> "$env:GITHUB_ENV";
+              'SESSION_READY=1' >> "$env:GITHUB_ENV";
               Write-Host "✅ Khôi phục toàn bộ ổ đĩa của máy [$env:MACHINE_ID] từ Repo Gốc hoàn tất!" -ForegroundColor Green;
           }
           exit 0;
@@ -962,127 +956,183 @@ jobs:
           exit 0;
 
       # ───────────────────────────────────────────────
-      # 7. CÀI ĐẶT, PHỤC HỒI & KHỞI CHẠY STARDESK
+      # 7. CÀI ĐẶT, KHỞI CHẠY GAMEVIEWER & TRÍCH XUẤT ID/PIN
       # ───────────────────────────────────────────────
-      - name: 🚀 Cài đặt & Khôi phục StarDesk từ ổ đĩa (X:\Apps\StarDesk-1.5.3.exe -> C:\)
+      - name: 🎮 Cài đặt, Khởi chạy NetEase GameViewer & Trích xuất Device ID & PIN
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue';
           $ProgressPreference    = 'SilentlyContinue';
           $user                  = "$env:RDP_USER";
-          $downloadUrl           = 'https://download943.mediafire.com/be95vz5kgnig_m7acKGr-mRjXQQKAN0i2WdjIR_d-q70MeLboolFJnUHit6ZmqJYm8_rJigOgY0P5NhtdANnLGXOaEmKg9eWSEUGCEEIZdCrV2NNZ0ubdEO1hyPHR6l2Re85XT5kJpCd3Q4GXpeU0ZD2QSr5gc_6aPfM7r15_YltcA/mf82krdrzcy3dz8/StarDesk_1.5.3.exe';
-          $appDir                = 'C:\Program Files\StarDesk';
-          $appExe                = 'C:\Program Files\StarDesk\StarDesk.exe';
-          $localInstaller        = 'C:\StarDesk-1.5.3.exe';
+          $gvDownloadUrl         = 'https://a56.gdl.netease.com/UURemote_Setup_4.43.1.3614_1016022822_gwqd.exe?key1=11cbe230b9ef214e4fa2470aabab147d&key2=6ad577fc&n=uuyc_4.43.1.exe';
+          $gvLocalInstaller      = 'C:\uuyc_4.43.1.exe';
           $appsFolder            = "$($env:MOUNT_LETTER):\Apps";
+          $gvAppDir              = 'C:\Program Files\Netease\GameViewer\bin';
+          $gvAppExe              = 'C:\Program Files\Netease\GameViewer\bin\GameViewer.exe';
+          $gvCli                 = 'C:\Program Files\Netease\GameViewer\bin\uuyc-cli.exe';
 
           Write-Host "";
-          Write-Host "🚀 ĐANG TIẾN HÀNH PHỤC HỒI, COPY RA Ổ C: & CÀI ĐẶT STARDESK..." -ForegroundColor Yellow;
+          Write-Host "🎮 ĐANG TIẾN HÀNH CÀI ĐẶT & CẤU HÌNH NETEASE GAMEVIEWER (UUREMOTE)..." -ForegroundColor Yellow;
 
-          # 1. Tìm kiếm file bộ cài trong X:\Apps (được lưu giữ từ ổ cũ)
-          $foundInstaller = $null;
-          $candidates = @(
-              [System.IO.Path]::Combine("$appsFolder", 'StarDesk-1.5.3.exe'),
-              [System.IO.Path]::Combine("$appsFolder", 'StarDesk_1.5.3.exe'),
-              (Get-ChildItem -Path "$appsFolder" -Filter 'StarDesk*.exe' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1),
-              [System.IO.Path]::Combine("$env:INSTALLER_CACHE", 'StarDesk-1.5.3.exe'),
-              [System.IO.Path]::Combine("$env:INSTALLER_CACHE", 'StarDesk_1.5.3.exe')
-          ) | Where-Object { $_ -and (Test-Path "$_") -and ((Get-Item "$_").Length -gt 1MB) };
+          # 1. Tìm kiếm file bộ cài trong X:\Apps (được lưu từ ổ cũ) hoặc tải mới
+          $cachedGv = [System.IO.Path]::Combine("$appsFolder", 'uuyc_4.43.1.exe');
+          if ((-not (Test-Path "$cachedGv")) -or ((Get-Item "$cachedGv").Length -lt 5MB)) {
+              $alt = Get-ChildItem -Path "$appsFolder" -Filter 'uuyc*.exe' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1;
+              if ($alt) { $cachedGv = $alt; }
+          }
 
-          if ($candidates.Count -gt 0) {
-              $foundInstaller = $candidates[0];
-              Write-Host "│ ✅ Đã tìm thấy bộ cài StarDesk trên ổ đĩa: $foundInstaller ($([math]::Round((Get-Item "$foundInstaller").Length / 1MB, 2)) MB)" -ForegroundColor Green;
-              Write-Host "│ 📋 Đang copy bộ cài ra ổ C: ($localInstaller)..." -ForegroundColor Cyan;
-              Copy-Item -Path "$foundInstaller" -Destination "$localInstaller" -Force;
+          if ((Test-Path "$cachedGv") -and ((Get-Item "$cachedGv").Length -gt 5MB)) {
+              Write-Host "│ ✅ Đã tìm thấy bộ cài GameViewer trên ổ đĩa: $cachedGv ($([math]::Round((Get-Item "$cachedGv").Length / 1MB, 2)) MB)" -ForegroundColor Green;
+              Copy-Item -Path "$cachedGv" -Destination "$gvLocalInstaller" -Force;
           } else {
-              Write-Host "│ ℹ️ Chưa có file trong X:\Apps, tiến hành tải bộ cài StarDesk_1.5.3.exe về..." -ForegroundColor Cyan;
+              Write-Host "│ ℹ️ Tải bộ cài GameViewer 4.43.1 từ NetEase..." -ForegroundColor Cyan;
               try {
                   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;
-                  & curl.exe -L --retry 3 --connect-timeout 30 -A "Mozilla/5.0" "$downloadUrl" -o "$localInstaller" 2>$null;
-                  if ((-not (Test-Path "$localInstaller")) -or ((Get-Item "$localInstaller").Length -lt 1MB)) {
-                      Invoke-WebRequest -Uri "$downloadUrl" -OutFile "$localInstaller" -UseBasicParsing -TimeoutSec 120;
+                  & curl.exe -L --retry 3 --connect-timeout 30 -A "Mozilla/5.0" "$gvDownloadUrl" -o "$gvLocalInstaller" 2>$null;
+                  if ((-not (Test-Path "$gvLocalInstaller")) -or ((Get-Item "$gvLocalInstaller").Length -lt 5MB)) {
+                      Invoke-WebRequest -Uri "$gvDownloadUrl" -OutFile "$gvLocalInstaller" -UseBasicParsing -TimeoutSec 180;
                   }
-                  if ((Test-Path "$localInstaller") -and ((Get-Item "$localInstaller").Length -gt 1MB)) {
-                      Write-Host "│ ✅ Tải thành công! Đang lưu bộ cài vào X:\Apps để các phiên sau dùng vĩnh viễn..." -ForegroundColor Green;
+                  if ((Test-Path "$gvLocalInstaller") -and ((Get-Item "$gvLocalInstaller").Length -gt 5MB)) {
+                      Write-Host "│ ✅ Tải thành công! Đang lưu bộ cài vào X:\Apps để tái sử dụng vĩnh viễn..." -ForegroundColor Green;
                       New-Item -ItemType Directory -Force -Path "$appsFolder" | Out-Null;
-                      Copy-Item -Path "$localInstaller" -Destination (Join-Path "$appsFolder" 'StarDesk-1.5.3.exe') -Force;
+                      Copy-Item -Path "$gvLocalInstaller" -Destination (Join-Path "$appsFolder" 'uuyc_4.43.1.exe') -Force;
                   }
               } catch {
-                  Write-Host "│ ⚠️ Lỗi tải: $($_.Exception.Message)" -ForegroundColor Yellow;
+                  Write-Host "│ ⚠️ Lỗi tải GameViewer: $($_.Exception.Message)" -ForegroundColor Yellow;
               }
           }
 
-          # 2. Cài đặt StarDesk tự động
-          if ((Test-Path "$localInstaller") -and ((Get-Item "$localInstaller").Length -gt 1MB)) {
-              Write-Host "│ 📦 Đang tiến hành cài đặt StarDesk từ $localInstaller..." -ForegroundColor Cyan;
-
-              Get-Service -Name '*StarDesk*' -ErrorAction SilentlyContinue | Stop-Service -Force -ErrorAction SilentlyContinue;
-              Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;
-              Start-Sleep -Seconds 2;
-
-              $sdInstallJob = Start-Job -ScriptBlock {
-                  param($exe)
-                  Start-Process -FilePath "$exe" -ArgumentList '/S' -Wait;
-              } -ArgumentList "$localInstaller";
-
-              $doneInstall = Wait-Job -Job ($sdInstallJob) -Timeout 60;
-              if (-not ($doneInstall)) {
-                  Write-Host "│ ⚠️ Bộ cài chờ quá 60s, kết thúc tiến trình..." -ForegroundColor Yellow;
-                  Stop-Job -Job ($sdInstallJob) -ErrorAction SilentlyContinue;
-                  Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;
-              }
-              Remove-Job -Job ($sdInstallJob) -Force -ErrorAction SilentlyContinue;
+          # 2. Cài đặt GameViewer tự động (Silent /S)
+          if ((Test-Path "$gvLocalInstaller") -and ((Get-Item "$gvLocalInstaller").Length -gt 5MB)) {
+              Write-Host "│ 📦 Đang tiến hành cài đặt GameViewer âm thầm (/S)..." -ForegroundColor Cyan;
+              Get-Service -Name '*GameViewer*' -ErrorAction SilentlyContinue | Stop-Service -Force -ErrorAction SilentlyContinue;
+              Get-Process -Name 'GameViewer*' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;
+              Start-Process -FilePath "$gvLocalInstaller" -ArgumentList '/S' -Wait;
+              Start-Sleep -Seconds 3;
           }
 
-          # 3. Kích hoạt Service StarDesk
-          Get-Service -Name '*StarDesk*' -ErrorAction SilentlyContinue | ForEach-Object {
+          # 3. Kích hoạt GameViewerService
+          Get-Service -Name '*GameViewer*' -ErrorAction SilentlyContinue | ForEach-Object {
               Set-Service -Name ($_.Name) -StartupType Automatic -ErrorAction SilentlyContinue;
               Start-Service -Name ($_.Name) -ErrorAction SilentlyContinue;
-              Write-Host "│ ✅ Đã bật dịch vụ $($_.Name)" -ForegroundColor Green;
+              Write-Host "│ ✅ Đã kích hoạt dịch vụ $($_.Name)" -ForegroundColor Green;
           };
 
-          # 4. Mở StarDesk trong phiên Console của người dùng
-          if (Test-Path "$appExe") {
+          # 4. Mở GameViewer trong phiên Console tương tác của người dùng
+          if (Test-Path "$gvAppExe") {
               try {
-                  & schtasks.exe /Create /TN "AISTV-Launch-StarDesk" /TR "`"$appExe`"" /SC ONCE /ST 00:00 /RU "$user" /RL HIGHEST /IT /F *> $null;
-                  & schtasks.exe /Run /TN "AISTV-Launch-StarDesk" *> $null;
-                  Start-Sleep -Seconds 3;
+                  & schtasks.exe /Create /TN "AISTV-Launch-GameViewer" /TR "`"$gvAppExe`"" /SC ONCE /ST 00:00 /RU "$user" /RL HIGHEST /IT /F *> $null;
+                  & schtasks.exe /Run /TN "AISTV-Launch-GameViewer" *> $null;
+                  Start-Sleep -Seconds 5;
               } catch {}
 
-              if (-not (Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue)) {
-                  Start-Process -FilePath "$appExe" -WorkingDirectory "$appDir" -ErrorAction SilentlyContinue;
-                  Start-Sleep -Seconds 2;
+              if (-not (Get-Process -Name 'GameViewer*' -ErrorAction SilentlyContinue)) {
+                  Start-Process -FilePath "$gvAppExe" -WorkingDirectory "$gvAppDir" -ErrorAction SilentlyContinue;
+                  Start-Sleep -Seconds 3;
               }
-              "STARDESK_READY=1" >> "$env:GITHUB_ENV";
-              Write-Host "│ ✅ Đã mở ứng dụng StarDesk thành công: $appExe" -ForegroundColor Green;
-          } else {
-              Write-Host "│ ⚠️ Không tìm thấy $appExe" -ForegroundColor Yellow;
+              Write-Host "│ ✅ Đã mở GameViewer: $gvAppExe" -ForegroundColor Green;
           }
 
-          # 5. Dò StarDesk ID (nếu có file config)
-          $sdId = '';
-          $cfgPaths = @(
-              "$env:USERPROFILE\AppData\Roaming\StarDesk\config\StarDesk.toml",
-              'C:\Windows\System32\config\systemprofile\AppData\Roaming\StarDesk\config\StarDesk.toml',
-              'C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\StarDesk\config\StarDesk.toml',
-              'C:\Program Files\StarDesk\StarDesk.toml'
-          );
-          foreach ($cfg in $cfgPaths) {
-              if (Test-Path "$cfg") {
-                  try {
-                      $content = Get-Content -Raw -Path "$cfg" -ErrorAction SilentlyContinue;
-                      if ($content -match 'id\s*=\s*[''"]?([0-9a-zA-Z_-]+)[''"]?') {
-                          $sdId = $Matches[1];
-                          break;
-                      }
-                  } catch {}
+          # 5. Đọc Device ID từ uuyc-cli.exe
+          $gvId = '';
+          if (Test-Path "$gvCli") {
+              $cliOut = & "$gvCli" -d 2>$null;
+              if ($cliOut -match '(\d{6,12})') {
+                  $gvId = $Matches[1];
               }
           }
-          if ($sdId) {
-              "STARDESK_ID=$sdId" >> "$env:GITHUB_ENV";
-              Write-Host "│ 🆔 StarDesk ID: $sdId" -ForegroundColor Yellow;
+
+          # 6. Giải mã PIN Code từ remote_assist_code.ini bằng DPAPI
+          $gvPin = '';
+          $iniPath = 'C:\ProgramData\Netease\GameViewer\remote_assist_code.ini';
+          $cacheDir = 'C:\ProgramData\Netease\GameViewer\cache';
+          if (Test-Path "$iniPath") {
+              try {
+                  Add-Type -AssemblyName System.Security;
+                  $iniContent = Get-Content -Raw -Path "$iniPath" -ErrorAction SilentlyContinue;
+                  $codeB64 = if ($iniContent -match 'code=([A-Za-z0-9+/=]+)') { $matches[1] } else { $null };
+                  $idKey = if ($iniContent -match 'id=([A-Fa-f0-9]+)') { $matches[1] } else { $null };
+
+                  $entropyStr = $null;
+                  if ($idKey -and (Test-Path "$cacheDir")) {
+                      Get-ChildItem -Path "$cacheDir" -Filter 'config_*.json' -File -ErrorAction SilentlyContinue | ForEach-Object {
+                          try {
+                              $jRaw = Get-Content -Path ($_.FullName) -Raw -Encoding UTF8;
+                              if ($jRaw -match "`"$idKey`"\s*:\s*`"([^`"]+)`"") {
+                                  $entropyStr = $matches[1];
+                              }
+                          } catch {}
+                      };
+                  }
+
+                  $candidates = @();
+                  if ($entropyStr) { $candidates += $entropyStr; }
+                  $candidates += '0f70ca20-1313-46f7-b528-3b8ecd525abc';
+
+                  if ($codeB64) {
+                      $encBytes = [System.Convert]::FromBase64String($codeB64);
+                      foreach ($cand in $candidates) {
+                          $entropyBytes = [System.Text.Encoding]::UTF8.GetBytes($cand);
+                          foreach ($scope in @([System.Security.Cryptography.DataProtectionScope]::CurrentUser, [System.Security.Cryptography.DataProtectionScope]::LocalMachine)) {
+                              try {
+                                  $decBytes = [System.Security.Cryptography.ProtectedData]::Unprotect($encBytes, $entropyBytes, $scope);
+                                  $decText = [System.Text.Encoding]::UTF8.GetString($decBytes);
+                                  if ($decText -and ($decText.Length -ge 4)) {
+                                      $gvPin = $decText;
+                                      break;
+                                  }
+                              } catch {}
+                          }
+                          if ($gvPin) { break; }
+                      }
+                  }
+              } catch {}
+          }
+
+          # Thiết lập mã xác nhận cố định qua uuyc-cli để luôn có phương án dự phòng
+          $fixedPass = if ("$env:RDP_PASS") { "$env:RDP_PASS" } else { 'Aistv@2026' };
+          if (Test-Path "$gvCli") {
+              & "$gvCli" -c "$fixedPass" *> $null;
+          }
+
+          if (-not $gvPin) {
+              $gvPin = "$fixedPass";
+          }
+
+          if ($gvId) {
+              "GAMEVIEWER_ID=$gvId" >> "$env:GITHUB_ENV";
+              "GAMEVIEWER_PIN=$gvPin" >> "$env:GITHUB_ENV";
+              "GAMEVIEWER_READY=1" >> "$env:GITHUB_ENV";
+              Write-Host "│ 🆔 GameViewer Device ID : $gvId" -ForegroundColor Yellow;
+              Write-Host "│ 🔑 GameViewer PIN Code  : $gvPin" -ForegroundColor Yellow;
           } else {
-              "STARDESK_ID=(Xem trực tiếp trên giao diện)" >> "$env:GITHUB_ENV";
+              "GAMEVIEWER_ID=(Xem trực tiếp)" >> "$env:GITHUB_ENV";
+              "GAMEVIEWER_PIN=$fixedPass" >> "$env:GITHUB_ENV";
+              Write-Host "│ ℹ️ GameViewer đã khởi động, ID sẽ được cập nhật" -ForegroundColor Yellow;
+          }
+
+          # Ghi file thông tin đăng nhập GameViewer
+          $credInfo = "ID: $gvId`r`nPIN: $gvPin`r`nPASS: $fixedPass`r`nUPDATED: $(Get-Date -Format 'o')";
+          $credFile1 = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'gameviewer-credentials.txt');
+          $credFile2 = [System.IO.Path]::Combine("$env:SHARED_SESSION_DIR", 'gameviewer-credentials.txt');
+          Set-Content -Path "$credFile1" -Value "$credInfo" -Encoding UTF8 -Force;
+          Set-Content -Path "$credFile2" -Value "$credInfo" -Encoding UTF8 -Force;
+
+          # Phát thông báo GitHub Check-Run Notice để Bot đọc được ngay tức khắc
+          [Console]::WriteLine("::notice title=GAMEVIEWER::ID=$gvId | PIN=$gvPin | PASS=$fixedPass");
+
+          # Khôi phục StarDesk phụ (nếu có bộ cài)
+          $sdInstaller = [System.IO.Path]::Combine("$appsFolder", 'StarDesk-1.5.3.exe');
+          if ((-not (Test-Path "$sdInstaller")) -and (Test-Path "$env:INSTALLER_CACHE\StarDesk-1.5.3.exe")) {
+              $sdInstaller = "$env:INSTALLER_CACHE\StarDesk-1.5.3.exe";
+          }
+          if (Test-Path "$sdInstaller") {
+              try {
+                  Start-Process -FilePath "$sdInstaller" -ArgumentList '/S' -Wait;
+                  Get-Service -Name '*StarDesk*' -ErrorAction SilentlyContinue | Start-Service -ErrorAction SilentlyContinue;
+                  & schtasks.exe /Create /TN "AISTV-Launch-StarDesk" /TR "'C:\Program Files\StarDesk\StarDesk.exe'" /SC ONCE /ST 00:00 /RU "$user" /RL HIGHEST /IT /F *> $null;
+                  & schtasks.exe /Run /TN "AISTV-Launch-StarDesk" *> $null;
+              } catch {}
           }
           exit 0;
 
@@ -1277,9 +1327,10 @@ jobs:
           exit 0;
 
       # ───────────────────────────────────────────────
-      # 10. THÔNG TIN KẾT NỐI (RDP + STARDESK + Ổ ĐĨA)
       # ───────────────────────────────────────────────
-      - name: 🎉 THÔNG TIN KẾT NỐI (RDP + STARDESK + Ổ ĐĨA)
+      # 10. THÔNG TIN KẾT NỐI (GAMEVIEWER + STARDESK + Ổ ĐĨA)
+      # ───────────────────────────────────────────────
+      - name: 🎉 THÔNG TIN KẾT NỐI (GAMEVIEWER + STARDESK + Ổ ĐĨA)
         shell: pwsh
         run: |
           $tz    = [System.TimeZoneInfo]::FindSystemTimeZoneById('SE Asia Standard Time');
@@ -1291,28 +1342,30 @@ jobs:
               $passText = '(dùng secret RDP_PASSWORD)';
           }
 
-          $sdStatus = if (Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue) { 'Đang chạy (Sẵn sàng)' } else { 'Chờ khởi tạo' };
-          $stardeskId = if ("$env:STARDESK_ID") { "$env:STARDESK_ID" } else { '(Xem trực tiếp)' };
+          $gvStatus = if (Get-Process -Name 'GameViewer*' -ErrorAction SilentlyContinue) { 'Đang chạy (Sẵn sàng)' } else { 'Chờ khởi tạo' };
+          $gvId = if ("$env:GAMEVIEWER_ID") { "$env:GAMEVIEWER_ID" } else { '(Xem trực tiếp)' };
+          $gvPin = if ("$env:GAMEVIEWER_PIN") { "$env:GAMEVIEWER_PIN" } else { "$passText" };
 
-          [Console]::WriteLine("::notice title=STARDESK::ID=$stardeskId | USER=$env:RDP_USER | PASS=$passText | REPO=$env:STORAGE_REPO | RUNNER=$env:RUNNER_REPO");
+          [Console]::WriteLine("::notice title=GAMEVIEWER::ID=$gvId | PIN=$gvPin | USER=$env:RDP_USER | PASS=$passText | REPO=$env:STORAGE_REPO | RUNNER=$env:RUNNER_REPO");
 
           Write-Host "";
           Write-Host "┌──────────────────────────────────────────────────────────┐" -ForegroundColor Cyan;
-          Write-Host "│           🎉 MÁY ẢO STARDESK ĐÃ SẴN SÀNG!                │" -ForegroundColor Cyan;
+          Write-Host "│          🎉 MÁY ẢO GAMEVIEWER ĐÃ SẴN SÀNG!               │" -ForegroundColor Cyan;
           Write-Host "├──────────────────────────────────────────────────────────┤" -ForegroundColor Cyan;
           Write-Host "│ 🏷️  Tên hiển thị  : $env:DISPLAY_NAME" -ForegroundColor Yellow;
           Write-Host "│ 🏷️  Định danh máy : $env:MACHINE_ID (Kho lưu: $env:RELEASE_TAG)" -ForegroundColor Cyan;
-          Write-Host "│ 🚀  StarDesk      : $sdStatus" -ForegroundColor Green;
-          Write-Host "│ 🆔  StarDesk ID   : $stardeskId" -ForegroundColor Yellow;
+          Write-Host "│ 🎮  GameViewer    : $gvStatus" -ForegroundColor Green;
+          Write-Host "│ 🆔  Device ID     : $gvId" -ForegroundColor Yellow;
+          Write-Host "│ 🔑  PIN Code      : $gvPin" -ForegroundColor Yellow;
           Write-Host "│ 👤  User Hệ Thống : $env:RDP_USER (Đã tắt RDP 3389 chống ban)" -ForegroundColor Green;
-          Write-Host "│ 🔐  Mật khẩu      : $passText (Cố định)" -ForegroundColor Green;
+          Write-Host "│ 🔐  Mật khẩu máy  : $passText (Cố định)" -ForegroundColor Green;
           Write-Host "│ 💽  Ổ đĩa riêng   : $($env:MOUNT_LETTER):\ ($env:SHARED_ROOT)" -ForegroundColor Green;
           Write-Host "│ 📦  Kho lưu gốc   : $env:STORAGE_REPO ($env:RELEASE_TAG)" -ForegroundColor Magenta;
           Write-Host "│ 🏃  Treo tại      : $env:RUNNER_REPO (Run #$env:GITHUB_RUN_ID)" -ForegroundColor Cyan;
           Write-Host "│ 🎛️  Web Quản Lý   : http://127.0.0.1:$($env:WEB_PORT)/" -ForegroundColor Yellow;
           Write-Host "│ ⏰  Thời lượng    : $env:DISPLAY_TIME ($($start.ToString('HH:mm:ss')) -> $($end.ToString('HH:mm:ss')))" -ForegroundColor White;
           Write-Host "├──────────────────────────────────────────────────────────┤" -ForegroundColor Cyan;
-          Write-Host "│ 💡 Mở StarDesk trên máy của bạn -> Nhập StarDesk ID để kết nối!" -ForegroundColor Yellow;
+          Write-Host "│ 💡 Mở GameViewer trên máy -> Nhập Device ID & PIN để kết nối!" -ForegroundColor Yellow;
           Write-Host "│ 💡 Dữ liệu được lưu trữ trực tiếp vào Repo Gốc [$env:STORAGE_REPO]!" -ForegroundColor Yellow;
           Write-Host "└──────────────────────────────────────────────────────────┘" -ForegroundColor Cyan;
           exit 0;
@@ -1320,7 +1373,7 @@ jobs:
       # ───────────────────────────────────────────────
       # 11. DUY TRÌ PHIÊN LÀM VIỆC & LẮNG NGHE LỆNH
       # ───────────────────────────────────────────────
-      - name: ⏳ DUY TRÌ PHIÊN LÀM VIỆC (GIỮ STARDESK & LẮNG NGHE WEB PANEL)
+      - name: ⏳ DUY TRÌ PHIÊN LÀM VIỆC (GIỮ GAMEVIEWER & LẮNG NGHE WEB PANEL)
         id: keepalive
         shell: pwsh
         run: |
@@ -1330,11 +1383,12 @@ jobs:
           $saveScript = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'save-data.ps1');
           $sigFile    = "$env:CONTROL_SIGNAL_FILE";
           $u          = "$env:RDP_USER";
-          $sdExe      = 'C:\Program Files\StarDesk\StarDesk.exe';
+          $gvExe      = 'C:\Program Files\Netease\GameViewer\bin\GameViewer.exe';
 
           Write-Host "";
           Write-Host "🔄 BẮT ĐẦU DUY TRÌ PHIÊN LÀM VIỆC CHO MÁY [$env:DISPLAY_NAME]..." -ForegroundColor Yellow;
-          Write-Host "🚀 StarDesk ID      : $env:STARDESK_ID" -ForegroundColor Green;
+          Write-Host "🎮 GameViewer ID    : $env:GAMEVIEWER_ID" -ForegroundColor Green;
+          Write-Host "🔑 GameViewer PIN   : $env:GAMEVIEWER_PIN" -ForegroundColor Green;
           Write-Host "📦 Lưu trữ tại Repo : $env:STORAGE_REPO ($env:RELEASE_TAG)" -ForegroundColor Cyan;
           Write-Host "🕐 Kết thúc dự kiến : $($endLocal.ToString('HH:mm:ss'))" -ForegroundColor Green;
           Write-Host "";
@@ -1350,16 +1404,6 @@ jobs:
                   if ("$cmd" -eq 'SAVE_NOW') {
                       Write-Host "💾 [WEB-PANEL] Nhận lệnh LƯU NGAY từ Web Quản Lý..." -ForegroundColor Cyan;
                       & "$saveScript" -Reason 'manual-web-save';
-                      if (Test-Path "$sdExe") {
-                          Get-Service -Name '*StarDesk*' -ErrorAction SilentlyContinue | Start-Service -ErrorAction SilentlyContinue;
-                          if (-not (Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue)) {
-                              & schtasks.exe /Run /TN "AISTV-Launch-StarDesk" *> $null;
-                              Start-Sleep -Seconds 2;
-                              if (-not (Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue)) {
-                                  Start-Process -FilePath "$sdExe" -WorkingDirectory 'C:\Program Files\StarDesk' -ErrorAction SilentlyContinue;
-                              }
-                          }
-                      }
                       $global:LASTEXITCODE = 0;
                   } elseif ("$cmd" -eq 'RESTART_SESSION') {
                       Write-Host "🔁 [WEB-PANEL] Nhận lệnh LƯU & KHỞI ĐỘNG LẠI PHIÊN MỚI từ Web Quản Lý!" -ForegroundColor Yellow;
@@ -1380,13 +1424,26 @@ jobs:
               }
 
               if ((((Get-Date) - ($lastLog)).TotalMinutes) -ge 5) {
-                  $svc     = Get-Service -Name TermService -ErrorAction SilentlyContinue;
-                  $sdProc  = Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue;
-                  $sdStat  = if ($sdProc) { 'Running' } else { 'Stopped' };
+                  $gvProc = Get-Process -Name 'GameViewer*' -ErrorAction SilentlyContinue;
+                  $gvStat = if ($gvProc) { 'Running' } else { 'Stopped' };
                   $h = [math]::Floor(($remain) / 3600);
                   $m = [math]::Floor((($remain) % 3600) / 60);
-                  Write-Host "[$(Get-Date -Format 'HH:mm:ss')] 📊 [$env:MACHINE_ID] RDP: $($svc.Status) | StarDesk: $sdStat (ID: $env:STARDESK_ID) | Còn lại: ${h}h${m}m" -ForegroundColor Blue;
+                  Write-Host "[$(Get-Date -Format 'HH:mm:ss')] 📊 [$env:MACHINE_ID] GameViewer: $gvStat (ID: $env:GAMEVIEWER_ID) | Còn lại: ${h}h${m}m" -ForegroundColor Blue;
                   $lastLog = Get-Date;
+              }
+
+              # Giữ GameViewerService & GameViewer luôn hoạt động
+              $gvSvc = Get-Service -Name 'GameViewerService' -ErrorAction SilentlyContinue;
+              if (($gvSvc) -and (($gvSvc.Status) -ne 'Running')) {
+                  Start-Service -Name 'GameViewerService' -ErrorAction SilentlyContinue;
+              }
+
+              if ((Test-Path "$gvExe") -and (-not (Get-Process -Name 'GameViewer*' -ErrorAction SilentlyContinue))) {
+                  & schtasks.exe /Run /TN "AISTV-Launch-GameViewer" *> $null;
+                  Start-Sleep -Seconds 1;
+                  if (-not (Get-Process -Name 'GameViewer*' -ErrorAction SilentlyContinue)) {
+                      Start-Process -FilePath "$gvExe" -WorkingDirectory 'C:\Program Files\Netease\GameViewer\bin' -ErrorAction SilentlyContinue;
+                  }
               }
 
               # Giữ dịch vụ RDP & StarDesk luôn chạy
@@ -1419,23 +1476,25 @@ jobs:
           exit 0;
 
       # ───────────────────────────────────────────────
-      # 12. TẮT STARDESK & LƯU TOÀN BỘ Ổ ĐĨA CUỐI PHIÊN LÊN REPO GỐC
+      # 12. TẮT GAMEVIEWER & STARDESK & LƯU TOÀN BỘ Ổ ĐĨA CUỐI PHIÊN LÊN REPO GỐC
       # ───────────────────────────────────────────────
-      - name: 💾 Tắt StarDesk & Lưu toàn bộ ổ đĩa cuối phiên lên Repo Gốc
+      - name: 💾 Tắt GameViewer & StarDesk & Lưu toàn bộ ổ đĩa cuối phiên lên Repo Gốc
         if: always()
         shell: pwsh
         run: |
-          Write-Host "🛑 Đang tắt StarDesk cuối phiên để giải phóng file..." -ForegroundColor Yellow;
+          Write-Host "🛑 Đang tắt GameViewer & StarDesk cuối phiên để giải phóng file..." -ForegroundColor Yellow;
 
+          & schtasks.exe /Delete /TN "AISTV-Launch-GameViewer" /F *> $null;
           & schtasks.exe /Delete /TN "AISTV-Launch-StarDesk" /F *> $null;
-          Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue | ForEach-Object {
+          Get-Process -Name 'GameViewer*', 'StarDesk*' -ErrorAction SilentlyContinue | ForEach-Object {
               $null = $_.CloseMainWindow();
           };
           Start-Sleep -Seconds 2;
-          Get-Service -Name '*StarDesk*' -ErrorAction SilentlyContinue | Stop-Service -Force -ErrorAction SilentlyContinue;
-          Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;
+          Get-Service -Name '*GameViewer*', '*StarDesk*' -ErrorAction SilentlyContinue | Stop-Service -Force -ErrorAction SilentlyContinue;
+          Get-Process -Name 'GameViewer*', 'StarDesk*' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;
+          & taskkill.exe /F /IM 'GameViewer*' /T *> $null;
           & taskkill.exe /F /IM 'StarDesk*' /T *> $null;
-          Write-Host "✅ Đã tắt hoàn toàn StarDesk!" -ForegroundColor Green;
+          Write-Host "✅ Đã tắt hoàn toàn GameViewer & StarDesk!" -ForegroundColor Green;
 
           $saveScript = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'save-data.ps1');
           if (-not (Test-Path "$saveScript")) {
