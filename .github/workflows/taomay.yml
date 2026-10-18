@@ -751,34 +751,27 @@ jobs:
           Write-Host "🕒 Thời gian     : $env:DISPLAY_TIME" -ForegroundColor Magenta;
 
       # ───────────────────────────────────────────────
-      # 5. CẤU HÌNH RDP & TỐI ƯU WINDOWS
+      # 5. TẮT RDP (CHỐNG GITHUB BAN) & TỐI ƯU WINDOWS
       # ───────────────────────────────────────────────
-      - name: 🔧 CẤU HÌNH HỆ THỐNG RDP, FIREWALL & TỐI ƯU WINDOWS
+      - name: 🛡️ Tắt RDP (Tránh GitHub Ban) & Tối Ưu Hệ Thống
         shell: pwsh
         run: |
           Write-Host "";
-          Write-Host "🛠️  ĐANG CẤU HÌNH HỆ THỐNG RDP & MỞ PORT FIREWALL" -ForegroundColor Yellow;
+          Write-Host "🛡️  ĐANG TẮT HOÀN TOÀN RDP (PORT 3389) ĐỂ BẢO VỆ TÀI KHOẢN GITHUB..." -ForegroundColor Yellow;
 
           $stepsList = @(
-              @{Name = "Bật Remote Desktop"; Script = {
-                  Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force;
+              @{Name = "Tắt Remote Desktop (fDenyTSConnections = 1)"; Script = {
+                  Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 1 -Force;
               }},
-              @{Name = "Cấu hình bảo mật RDP & Mở khóa truyền Âm thanh"; Script = {
-                  $p = 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp';
-                  Set-ItemProperty -Path "$p" -Name 'UserAuthentication' -Value 0 -Force;
-                  Set-ItemProperty -Path "$p" -Name 'SecurityLayer' -Value 0 -Force;
-                  Set-ItemProperty -Path "$p" -Name 'fDisableAudioCapture' -Value 0 -Type DWord -Force;
-                  Set-ItemProperty -Path "$p" -Name 'fDisableCam' -Value 0 -Type DWord -Force;
+              @{Name = "Tắt và Vô hiệu hóa dịch vụ RDP (TermService & UmRdpService)"; Script = {
+                  Stop-Service -Name TermService -Force -ErrorAction SilentlyContinue;
+                  Set-Service -Name TermService -StartupType Disabled -ErrorAction SilentlyContinue;
+                  Stop-Service -Name UmRdpService -Force -ErrorAction SilentlyContinue;
+                  Set-Service -Name UmRdpService -StartupType Disabled -ErrorAction SilentlyContinue;
               }},
-              @{Name = "Mở port RDP (3389) & Web Quản Lý (8080)"; Script = {
+              @{Name = "Xóa Rule mở port RDP (3389) khỏi Firewall"; Script = {
                   Remove-NetFirewallRule -DisplayName 'RDP-Premium' -ErrorAction SilentlyContinue;
-                  New-NetFirewallRule -DisplayName 'RDP-Premium' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3389,8080 -Profile Any | Out-Null;
-              }},
-              @{Name = "Khởi động dịch vụ RDP"; Script = {
-                  Set-Service -Name TermService -StartupType Automatic -ErrorAction SilentlyContinue;
-                  Set-Service -Name UmRdpService -StartupType Automatic -ErrorAction SilentlyContinue;
-                  Start-Service -Name TermService -ErrorAction SilentlyContinue;
-                  Start-Service -Name UmRdpService -ErrorAction SilentlyContinue;
+                  netsh advfirewall firewall set rule group="remote desktop" new enable=No 2>&1 | Out-Null;
               }}
           );
 
@@ -788,7 +781,7 @@ jobs:
                   & ($item.Script);
                   Write-Host "│ ✅ $($item.Name)" -ForegroundColor Green;
               } catch {
-                  Write-Host "│ ⚠️  $($item.Name) - bỏ qua lỗi nhỏ: $($_.Exception.Message)" -ForegroundColor Yellow;
+                  Write-Host "│ ⚠️  $($item.Name) - bỏ qua: $($_.Exception.Message)" -ForegroundColor Yellow;
               }
           };
           exit 0;
@@ -807,13 +800,6 @@ jobs:
                   powercfg /change monitor-timeout-ac 0;
                   powercfg /change disk-timeout-ac 0;
                   powercfg /hibernate off;
-              }},
-              @{Name = "Giữ phiên RDP (không tự ngắt khi rảnh/ngắt kết nối)"; Script = {
-                  $p = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services';
-                  New-Item -Path "$p" -Force | Out-Null;
-                  Set-ItemProperty -Path "$p" -Name 'MaxIdleTime' -Value 0 -Type DWord -Force;
-                  Set-ItemProperty -Path "$p" -Name 'MaxDisconnectionTime' -Value 0 -Type DWord -Force;
-                  Set-ItemProperty -Path "$p" -Name 'fResetBroken' -Value 0 -Type DWord -Force;
               }},
               @{Name = "Tắt Windows Update"; Script = {
                   Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue;
@@ -912,19 +898,67 @@ jobs:
 
               if (-not (Test-Path "$vbZip")) {
                   try {
-                      Invoke-WebRequest -Uri 'https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack43.zip' -OutFile "$vbZip" -UseBasicParsing -TimeoutSec 45;
-                  } catch {}
+                      Invoke-WebRequest -Uri 'https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack43.zip' -OutFile "$vbZip" -UseBasicParsing -TimeoutSec 30;
+                  } catch {
+                      Invoke-WebRequest -Uri 'https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip' -OutFile "$vbZip" -UseBasicParsing -TimeoutSec 30;
+                  }
               }
               if ((Test-Path "$vbZip") -and (-not (Test-Path "$vbCacheDir\VBCABLE_Setup_x64.exe"))) {
                   Expand-Archive -Path "$vbZip" -DestinationPath "$vbCacheDir" -Force;
               }
-              if (Test-Path "$vbCacheDir\VBCABLE_Setup_x64.exe") {
-                  Start-Process -FilePath "$vbCacheDir\VBCABLE_Setup_x64.exe" -ArgumentList '-i', '-h' -WorkingDirectory "$vbCacheDir" -Wait;
+
+              Get-ChildItem -Path "$vbCacheDir" -Include '*.cer','*.cat','*.sys','*.exe' -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+                  if ($_.Extension -eq '.cer') {
+                      Import-Certificate -FilePath ($_.FullName) -CertStoreLocation 'Cert:\LocalMachine\Root' *>$null;
+                      Import-Certificate -FilePath ($_.FullName) -CertStoreLocation 'Cert:\LocalMachine\TrustedPublisher' *>$null;
+                  } else {
+                      $sig = Get-AuthenticodeSignature -FilePath ($_.FullName) -ErrorAction SilentlyContinue;
+                      if ($sig -and $sig.SignerCertificate) {
+                          $storeRoot = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', 'LocalMachine');
+                          $storeRoot.Open('ReadWrite');
+                          $storeRoot.Add($sig.SignerCertificate);
+                          $storeRoot.Close();
+                          $storePub = New-Object System.Security.Cryptography.X509Certificates.X509Store('TrustedPublisher', 'LocalMachine');
+                          $storePub.Open('ReadWrite');
+                          $storePub.Add($sig.SignerCertificate);
+                          $storePub.Close();
+                      }
+                  }
+              };
+
+              $vbInf = Get-ChildItem -Path "$vbCacheDir" -Filter '*64*.inf' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1;
+              if (-not ($vbInf)) {
+                  $vbInf = Get-ChildItem -Path "$vbCacheDir" -Filter '*.inf' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1;
               }
+              if ($vbInf) {
+                  pnputil /add-driver ($vbInf.FullName) /install *> $null;
+                  if (Test-Path "$usbDir\deviceinstaller64.exe") {
+                      Push-Location ($vbInf.DirectoryName);
+                      & "$usbDir\deviceinstaller64.exe" install ($vbInf.Name) 'VBAudioVACWDM' *> $null;
+                      Pop-Location;
+                  }
+              }
+
+              $audioDev = Get-PnpDevice -Class 'MEDIA','AudioEndpoint' -ErrorAction SilentlyContinue | Where-Object { ($_.FriendlyName -match 'VB-Audio|CABLE|Virtual Audio') -and ($_.Status -eq 'OK') };
+              if ((-not ($audioDev)) -and (Test-Path "$vbCacheDir\VBCABLE_Setup_x64.exe")) {
+                  $vbJob = Start-Job -ScriptBlock {
+                      param($dir)
+                      Start-Process -FilePath "$dir\VBCABLE_Setup_x64.exe" -ArgumentList '-i', '-h' -WorkingDirectory "$dir" -Wait;
+                  } -ArgumentList "$vbCacheDir";
+                  $doneVb = Wait-Job -Job ($vbJob) -Timeout 15;
+                  if (-not ($doneVb)) {
+                      Stop-Job -Job ($vbJob) -ErrorAction SilentlyContinue;
+                      Get-Process -Name 'VBCABLE*' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;
+                  }
+                  Remove-Job -Job ($vbJob) -Force -ErrorAction SilentlyContinue;
+              }
+
               Restart-Service -Name 'Audiosrv' -Force -ErrorAction SilentlyContinue;
               "AUDIO_DEVICE_NAME=Speakers (VB-Audio Virtual Cable)" >> "$env:GITHUB_ENV";
-              Write-Host "│ ✅ Đã bật dịch vụ Âm thanh ảo" -ForegroundColor Green;
-          } catch {}
+              Write-Host "│ ✅ Đã cấu hình Card Âm thanh ảo" -ForegroundColor Green;
+          } catch {
+              Write-Host "│ ⚠️ Lỗi cài âm thanh ảo (bỏ qua): $($_.Exception.Message)" -ForegroundColor Yellow;
+          }
           exit 0;
 
       # ───────────────────────────────────────────────
@@ -1264,13 +1298,13 @@ jobs:
 
           Write-Host "";
           Write-Host "┌──────────────────────────────────────────────────────────┐" -ForegroundColor Cyan;
-          Write-Host "│           🎉 RDP & STARDESK MÁY ẢO ĐÃ SẴN SÀNG!          │" -ForegroundColor Cyan;
+          Write-Host "│           🎉 MÁY ẢO STARDESK ĐÃ SẴN SÀNG!                │" -ForegroundColor Cyan;
           Write-Host "├──────────────────────────────────────────────────────────┤" -ForegroundColor Cyan;
           Write-Host "│ 🏷️  Tên hiển thị  : $env:DISPLAY_NAME" -ForegroundColor Yellow;
           Write-Host "│ 🏷️  Định danh máy : $env:MACHINE_ID (Kho lưu: $env:RELEASE_TAG)" -ForegroundColor Cyan;
           Write-Host "│ 🚀  StarDesk      : $sdStatus" -ForegroundColor Green;
           Write-Host "│ 🆔  StarDesk ID   : $stardeskId" -ForegroundColor Yellow;
-          Write-Host "│ 👤  User RDP      : $env:RDP_USER (Port 3389)" -ForegroundColor Green;
+          Write-Host "│ 👤  User Hệ Thống : $env:RDP_USER (Đã tắt RDP 3389 chống ban)" -ForegroundColor Green;
           Write-Host "│ 🔐  Mật khẩu      : $passText (Cố định)" -ForegroundColor Green;
           Write-Host "│ 💽  Ổ đĩa riêng   : $($env:MOUNT_LETTER):\ ($env:SHARED_ROOT)" -ForegroundColor Green;
           Write-Host "│ 📦  Kho lưu gốc   : $env:STORAGE_REPO ($env:RELEASE_TAG)" -ForegroundColor Magenta;
