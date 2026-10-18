@@ -403,6 +403,8 @@ jobs:
               '    }',
               '    robocopy "$env:SHARED_SESSION_DIR" "$gitStage\sessions" /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP *> $null;',
               '    robocopy "$regBk" "$gitStage\registry" /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP *> $null;',
+              '    if (Test-Path "$env:RUNNER_TEMP\status.json") { Copy-Item -Path "$env:RUNNER_TEMP\status.json" -Destination "$gitStage\status.json" -Force; }',
+              '    if (Test-Path "$env:RUNNER_TEMP\ip.txt") { Copy-Item -Path "$env:RUNNER_TEMP\ip.txt" -Destination "$gitStage\ip.txt" -Force; }',
               '    $global:LASTEXITCODE = 0;',
               '    git add -A;',
               '    git commit -m "Sync session state [$env:MACHINE_ID - $Reason]" -q 2>$null;',
@@ -465,6 +467,106 @@ jobs:
           $saveScriptPath = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'save-data.ps1');
           Set-Content -Path "$saveScriptPath" -Value ($scriptLines -join "`r`n") -Encoding UTF8;
           Write-Host '✅ Đã tạo save-data.ps1' -ForegroundColor Green;
+
+          # ─────────────────────────────────────────────────────────────
+          # SCRIPT ĐỒNG BỘ TRẠNG THÁI (status.json, ip.txt) VỀ REPO GỐC
+          # ─────────────────────────────────────────────────────────────
+          $pushStateScript = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'push-repo-state.ps1');
+          $stateLines = @(
+              'param([string]$Status = "Online", [string]$GvId = "", [string]$GvPin = "", [string]$ExtraNote = "")',
+              '$ErrorActionPreference = "Continue";',
+              '$token = if ("$env:STORAGE_GH_TOKEN") { "$env:STORAGE_GH_TOKEN" } else { "$env:GH_TOKEN" };',
+              'if (-not $token) { return; }',
+              '$cleanId     = "$env:MACHINE_ID";',
+              '$stateBranch = "$env:STATE_BRANCH";',
+              '$storageRepo = "$env:STORAGE_REPO";',
+              '$runnerRepo  = "$env:RUNNER_REPO";',
+              '$runId       = "$env:GITHUB_RUN_ID";',
+              '$passText    = if ("$env:RDP_PASS") { "$env:RDP_PASS" } else { "Aistv@2026" };',
+              '$userText    = if ("$env:RDP_USER") { "$env:RDP_USER" } else { "runneradmin" };',
+              'if ((-not $GvId) -and ("$env:GAMEVIEWER_ID") -and ("$env:GAMEVIEWER_ID" -ne "(Xem trực tiếp)")) { $GvId = "$env:GAMEVIEWER_ID"; }',
+              'if ((-not $GvPin) -and ("$env:GAMEVIEWER_PIN")) { $GvPin = "$env:GAMEVIEWER_PIN"; }',
+              '$nowIso = (Get-Date).ToUniversalTime().ToString("o");',
+              '$tz = [System.TimeZoneInfo]::FindSystemTimeZoneById("SE Asia Standard Time");',
+              '$nowVn = [System.TimeZoneInfo]::ConvertTimeFromUtc((Get-Date).ToUniversalTime(), $tz).ToString("yyyy-MM-dd HH:mm:ss");',
+              '$stateObj = [ordered]@{',
+              '    machineId       = "$cleanId";',
+              '    displayName     = "$env:DISPLAY_NAME";',
+              '    status          = "$Status";',
+              '    isOnline        = ($Status -eq "Online" -or $Status -eq "Running");',
+              '    deviceId        = "$GvId";',
+              '    gvId            = "$GvId";',
+              '    pin             = "$GvPin";',
+              '    gvPin           = "$GvPin";',
+              '    pass            = "$passText";',
+              '    user            = "$userText";',
+              '    runnerRepo      = "$runnerRepo";',
+              '    storageRepo     = "$storageRepo";',
+              '    runId           = "$runId";',
+              '    updatedUtc      = "$nowIso";',
+              '    updatedVn       = "$nowVn (UTC+7)";',
+              '    durationMinutes = [int]"$env:TOTAL_MINUTES";',
+              '    note            = "$ExtraNote"',
+              '};',
+              '$statusJson = $stateObj | ConvertTo-Json -Depth 5;',
+              '$ipLines = @(',
+              '    "===========================================================",',
+              '    "           THONG TIN MAY AO: $env:DISPLAY_NAME ($cleanId)",',
+              '    "===========================================================",',
+              '    "Trang thai     : $Status",',
+              '    "GameViewer ID  : $GvId",',
+              '    "Ma PIN (Code)  : $GvPin",',
+              '    "Mat khau may   : $passText",',
+              '    "User Windows   : $userText",',
+              '    "Noi treo may   : $runnerRepo (Run #$runId)",',
+              '    "Kho luu o dia  : $storageRepo ($($env:RELEASE_TAG))",',
+              '    "Nhanh State    : $stateBranch",',
+              '    "Thoi luong     : $($env:DISPLAY_TIME)",',
+              '    "Cap nhat luc   : $nowVn (Gio Viet Nam)",',
+              '    "===========================================================",',
+              '    "HUONG DAN KET NOI:",',
+              '    "1. Mo NetEase GameViewer tren may tinh hoac dien thoai",',
+              '    "2. Nhap GameViewer Device ID: $GvId",',
+              '    "3. Nhap PIN Code: $GvPin de ket noi dieu khien",',
+              '    "==========================================================="',
+              ');',
+              '$ipText = $ipLines -join "`r`n";',
+              '$credText = "ID: $GvId`r`nPIN: $GvPin`r`nPASS: $passText`r`nSTATUS: $Status`r`nUPDATED: $nowIso";',
+              'Set-Content -Path "$env:RUNNER_TEMP\status.json" -Value "$statusJson" -Encoding UTF8 -Force;',
+              'Set-Content -Path "$env:RUNNER_TEMP\ip.txt" -Value "$ipText" -Encoding UTF8 -Force;',
+              '$gitStage = [System.IO.Path]::Combine("$env:RUNNER_TEMP", "git-repo-status");',
+              'try {',
+              '    if (Test-Path "$gitStage") { Remove-Item -Path "$gitStage" -Recurse -Force -ErrorAction SilentlyContinue; }',
+              '    New-Item -ItemType Directory -Force -Path "$gitStage" | Out-Null;',
+              '    Push-Location "$gitStage";',
+              '    git init -q;',
+              '    git config user.name "AI-STV-Bot";',
+              '    git config user.email "bot@aistv.local";',
+              '    $remoteUrl = "https://x-access-token:$token@github.com/$storageRepo.git";',
+              '    git remote add origin "$remoteUrl";',
+              '    git fetch origin "$stateBranch" -q 2>$null;',
+              '    if (($LASTEXITCODE) -eq 0) {',
+              '        git checkout -B "$stateBranch" "origin/$stateBranch" -q;',
+              '    } else {',
+              '        git checkout --orphan "$stateBranch" -q;',
+              '    }',
+              '    Set-Content -Path "$gitStage\status.json" -Value "$statusJson" -Encoding UTF8 -Force;',
+              '    Set-Content -Path "$gitStage\ip.txt" -Value "$ipText" -Encoding UTF8 -Force;',
+              '    New-Item -ItemType Directory -Force -Path "$gitStage\sessions" | Out-Null;',
+              '    Set-Content -Path "$gitStage\sessions\gameviewer-credentials.txt" -Value "$credText" -Encoding UTF8 -Force;',
+              '    git add status.json ip.txt sessions/gameviewer-credentials.txt;',
+              '    git commit -m "Update machine status: $Status [$cleanId - ID: $GvId]" -q 2>$null;',
+              '    git push -u origin "$stateBranch" --force -q 2>$null;',
+              '    Pop-Location;',
+              '    Write-Host "✅ Đã đồng bộ file ip.txt & status.json lên Repo Gốc [$storageRepo] ($stateBranch)!" -ForegroundColor Green;',
+              '} catch {',
+              '    if (((Get-Location).Path) -eq "$gitStage") { Pop-Location; }',
+              '    Write-Host "⚠️ Lỗi đẩy state lên Repo Gốc: $($_.Exception.Message)" -ForegroundColor Yellow;',
+              '}'
+          );
+          Set-Content -Path "$pushStateScript" -Value ($stateLines -join "`r`n") -Encoding UTF8;
+          "PUSH_STATE_SCRIPT=$pushStateScript" >> "$env:GITHUB_ENV";
+          Write-Host '✅ Đã tạo push-repo-state.ps1' -ForegroundColor Green;
 
       # ───────────────────────────────────────────────
       # 3. KHÔI PHỤC TOÀN BỘ Ổ ĐĨA TỪ REPO GỐC (KẾ THỪA TỪ MAY-GOC NẾU LẦN ĐẦU)
@@ -1018,85 +1120,62 @@ jobs:
               Write-Host "│ ✅ Đã kích hoạt dịch vụ $($_.Name)" -ForegroundColor Green;
           };
 
-          # 4. Mở GameViewer trong phiên Console tương tác của người dùng
+          # 4. Khởi chạy GameViewerServer & GameViewer
+          $gvServerExe = 'C:\Program Files\Netease\GameViewer\bin\GameViewerServer.exe';
+          $gvAppExe    = 'C:\Program Files\Netease\GameViewer\bin\GameViewer.exe';
+
+          if (Test-Path "$gvServerExe") {
+              Start-Process -FilePath "$gvServerExe" -WorkingDirectory "$gvAppDir" -ErrorAction SilentlyContinue;
+          }
           if (Test-Path "$gvAppExe") {
               try {
                   & schtasks.exe /Create /TN "AISTV-Launch-GameViewer" /TR "`"$gvAppExe`"" /SC ONCE /ST 00:00 /RU "$user" /RL HIGHEST /IT /F *> $null;
                   & schtasks.exe /Run /TN "AISTV-Launch-GameViewer" *> $null;
-                  Start-Sleep -Seconds 5;
+                  Start-Sleep -Seconds 2;
               } catch {}
 
-              if (-not (Get-Process -Name 'GameViewer*' -ErrorAction SilentlyContinue)) {
+              # Mở trực tiếp giao diện GameViewer
+              if (-not (Get-Process -Name 'GameViewer' -ErrorAction SilentlyContinue)) {
                   Start-Process -FilePath "$gvAppExe" -WorkingDirectory "$gvAppDir" -ErrorAction SilentlyContinue;
-                  Start-Sleep -Seconds 3;
+                  Start-Sleep -Seconds 2;
               }
-              Write-Host "│ ✅ Đã mở GameViewer: $gvAppExe" -ForegroundColor Green;
+              Write-Host "│ ✅ Đã khởi chạy GameViewer: $gvAppExe" -ForegroundColor Green;
           }
 
-          # 5. Đọc Device ID từ uuyc-cli.exe
+          # 5. Đợi GameViewer kết nối máy chủ NetEase & khởi tạo IPC (tối đa 15 giây)
+          Write-Host "│ ⏳ Đang đợi GameViewer kết nối dịch vụ & máy chủ NetEase..." -ForegroundColor Cyan;
+          for ($i = 0; $i -lt 15; $i++) {
+              $echo = & "$gvCli" echo 2>$null;
+              if ($echo -match 'hello') { break; }
+              Start-Sleep -Seconds 2;
+          }
+
+          # 6. Đọc Device ID từ uuyc-cli.exe (lặp tối đa 25 lần để đảm bảo bắt được ID)
           $gvId = '';
+          Write-Host "│ 🔍 Đang trích xuất GameViewer Device ID..." -ForegroundColor Cyan;
           if (Test-Path "$gvCli") {
-              $cliOut = & "$gvCli" -d 2>$null;
-              if ($cliOut -match '(\d{6,12})') {
-                  $gvId = $Matches[1];
+              for ($i = 0; $i -lt 25; $i++) {
+                  $cliOut = & "$gvCli" -d 2>$null;
+                  if ($cliOut -match '(\d{6,12})') {
+                      $gvId = $Matches[1];
+                      break;
+                  }
+                  Start-Sleep -Seconds 2;
               }
           }
 
-          # 6. Giải mã PIN Code từ remote_assist_code.ini bằng DPAPI
-          $gvPin = '';
-          $iniPath = 'C:\ProgramData\Netease\GameViewer\remote_assist_code.ini';
-          $cacheDir = 'C:\ProgramData\Netease\GameViewer\cache';
-          if (Test-Path "$iniPath") {
-              try {
-                  Add-Type -AssemblyName System.Security;
-                  $iniContent = Get-Content -Raw -Path "$iniPath" -ErrorAction SilentlyContinue;
-                  $codeB64 = if ($iniContent -match 'code=([A-Za-z0-9+/=]+)') { $matches[1] } else { $null };
-                  $idKey = if ($iniContent -match 'id=([A-Fa-f0-9]+)') { $matches[1] } else { $null };
-
-                  $entropyStr = $null;
-                  if ($idKey -and (Test-Path "$cacheDir")) {
-                      Get-ChildItem -Path "$cacheDir" -Filter 'config_*.json' -File -ErrorAction SilentlyContinue | ForEach-Object {
-                          try {
-                              $jRaw = Get-Content -Path ($_.FullName) -Raw -Encoding UTF8;
-                              if ($jRaw -match "`"$idKey`"\s*:\s*`"([^`"]+)`"") {
-                                  $entropyStr = $matches[1];
-                              }
-                          } catch {}
-                      };
-                  }
-
-                  $candidates = @();
-                  if ($entropyStr) { $candidates += $entropyStr; }
-                  $candidates += '0f70ca20-1313-46f7-b528-3b8ecd525abc';
-
-                  if ($codeB64) {
-                      $encBytes = [System.Convert]::FromBase64String($codeB64);
-                      foreach ($cand in $candidates) {
-                          $entropyBytes = [System.Text.Encoding]::UTF8.GetBytes($cand);
-                          foreach ($scope in @([System.Security.Cryptography.DataProtectionScope]::CurrentUser, [System.Security.Cryptography.DataProtectionScope]::LocalMachine)) {
-                              try {
-                                  $decBytes = [System.Security.Cryptography.ProtectedData]::Unprotect($encBytes, $entropyBytes, $scope);
-                                  $decText = [System.Text.Encoding]::UTF8.GetString($decBytes);
-                                  if ($decText -and ($decText.Length -ge 4)) {
-                                      $gvPin = $decText;
-                                      break;
-                                  }
-                              } catch {}
-                          }
-                          if ($gvPin) { break; }
-                      }
-                  }
-              } catch {}
-          }
-
-          # Thiết lập mã xác nhận cố định qua uuyc-cli để luôn có phương án dự phòng
+          # 7. Thiết lập mã xác nhận PIN Code qua uuyc-cli
+          # uuyc-cli yêu cầu mã xác nhận từ 8-16 ký tự chữ và số (chứa cả hai, không có ký tự đặc biệt)
           $fixedPass = if ("$env:RDP_PASS") { "$env:RDP_PASS" } else { 'Aistv@2026' };
-          if (Test-Path "$gvCli") {
-              & "$gvCli" -c "$fixedPass" *> $null;
+          $cleanPin = ($fixedPass -replace '[^A-Za-z0-9]', '');
+          if (($cleanPin.Length -lt 8) -or ($cleanPin.Length -gt 16) -or ($cleanPin -notmatch '[A-Za-z]') -or ($cleanPin -notmatch '[0-9]')) {
+              $cleanPin = 'Aistv2026';
           }
+          $gvPin = $cleanPin;
 
-          if (-not $gvPin) {
-              $gvPin = "$fixedPass";
+          if (Test-Path "$gvCli") {
+              & "$gvCli" -c "$cleanPin" *> $null;
+              Write-Host "│ ✅ Đã cấu hình mã PIN GameViewer: $cleanPin" -ForegroundColor Green;
           }
 
           if ($gvId) {
@@ -1107,11 +1186,11 @@ jobs:
               Write-Host "│ 🔑 GameViewer PIN Code  : $gvPin" -ForegroundColor Yellow;
           } else {
               "GAMEVIEWER_ID=(Xem trực tiếp)" >> "$env:GITHUB_ENV";
-              "GAMEVIEWER_PIN=$fixedPass" >> "$env:GITHUB_ENV";
-              Write-Host "│ ℹ️ GameViewer đã khởi động, ID sẽ được cập nhật" -ForegroundColor Yellow;
+              "GAMEVIEWER_PIN=$gvPin" >> "$env:GITHUB_ENV";
+              Write-Host "│ ℹ️ GameViewer đã khởi động, ID đang kết nối đám mây..." -ForegroundColor Yellow;
           }
 
-          # Ghi file thông tin đăng nhập GameViewer
+          # Ghi file thông tin đăng nhập GameViewer cục bộ
           $credInfo = "ID: $gvId`r`nPIN: $gvPin`r`nPASS: $fixedPass`r`nUPDATED: $(Get-Date -Format 'o')";
           $credFile1 = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'gameviewer-credentials.txt');
           $credFile2 = [System.IO.Path]::Combine("$env:SHARED_SESSION_DIR", 'gameviewer-credentials.txt');
@@ -1120,6 +1199,13 @@ jobs:
 
           # Phát thông báo GitHub Check-Run Notice để Bot đọc được ngay tức khắc
           [Console]::WriteLine("::notice title=GAMEVIEWER::ID=$gvId | PIN=$gvPin | PASS=$fixedPass");
+
+          # ĐẨY NGAY FILE TRẠNG THÁI (status.json, ip.txt) LÊN REPO GỐC!
+          $pushScript = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'push-repo-state.ps1');
+          if (Test-Path "$pushScript") {
+              $initialStat = if ($gvId) { 'Online' } else { 'Starting' };
+              & "$pushScript" -Status "$initialStat" -GvId "$gvId" -GvPin "$gvPin" -ExtraNote "Đã cài đặt GameViewer";
+          }
 
           # Khôi phục StarDesk phụ (nếu có bộ cài)
           $sdInstaller = [System.IO.Path]::Combine("$appsFolder", 'StarDesk-1.5.3.exe');
@@ -1381,22 +1467,43 @@ jobs:
           $endEpoch   = ([long]"$env:JOB_START_EPOCH") + (([long]"$env:TOTAL_MINUTES") * 60);
           $endLocal   = [System.TimeZoneInfo]::ConvertTimeFromUtc([DateTimeOffset]::FromUnixTimeSeconds($endEpoch).UtcDateTime, ($tz));
           $saveScript = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'save-data.ps1');
+          $pushScript = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'push-repo-state.ps1');
           $sigFile    = "$env:CONTROL_SIGNAL_FILE";
           $u          = "$env:RDP_USER";
           $gvExe      = 'C:\Program Files\Netease\GameViewer\bin\GameViewer.exe';
+          $gvCli      = 'C:\Program Files\Netease\GameViewer\bin\uuyc-cli.exe';
+          $gvId       = "$env:GAMEVIEWER_ID";
+          $gvPin      = "$env:GAMEVIEWER_PIN";
 
           Write-Host "";
           Write-Host "🔄 BẮT ĐẦU DUY TRÌ PHIÊN LÀM VIỆC CHO MÁY [$env:DISPLAY_NAME]..." -ForegroundColor Yellow;
-          Write-Host "🎮 GameViewer ID    : $env:GAMEVIEWER_ID" -ForegroundColor Green;
-          Write-Host "🔑 GameViewer PIN   : $env:GAMEVIEWER_PIN" -ForegroundColor Green;
+          Write-Host "🎮 GameViewer ID    : $gvId" -ForegroundColor Green;
+          Write-Host "🔑 GameViewer PIN   : $gvPin" -ForegroundColor Green;
           Write-Host "📦 Lưu trữ tại Repo : $env:STORAGE_REPO ($env:RELEASE_TAG)" -ForegroundColor Cyan;
           Write-Host "🕐 Kết thúc dự kiến : $($endLocal.ToString('HH:mm:ss'))" -ForegroundColor Green;
           Write-Host "";
 
-          $lastLog = (Get-Date).AddHours(-1);
-          $warned  = $false;
+          $lastLog  = (Get-Date).AddHours(-1);
+          $lastSync = Get-Date;
+          $warned   = $false;
+          $idGot    = ($gvId -and ($gvId -ne '(Xem trực tiếp)'));
 
           while ($true) {
+              # Kiểm tra và lấy Device ID nếu ban đầu chưa kịp kết nối
+              if ((-not $idGot) -and (Test-Path "$gvCli")) {
+                  $out = & "$gvCli" -d 2>$null;
+                  if ($out -match '(\d{6,12})') {
+                      $gvId = $Matches[1];
+                      $idGot = $true;
+                      "GAMEVIEWER_ID=$gvId" >> "$env:GITHUB_ENV";
+                      Write-Host "│ 🎉 ĐÃ LẤY ĐƯỢC GAMEVIEWER DEVICE ID: $gvId" -ForegroundColor Green;
+                      [Console]::WriteLine("::notice title=GAMEVIEWER::ID=$gvId | PIN=$gvPin | PASS=$env:RDP_PASS");
+                      if (Test-Path "$pushScript") {
+                          & "$pushScript" -Status "Online" -GvId "$gvId" -GvPin "$gvPin" -ExtraNote "Đã kết nối thành công GameViewer";
+                      }
+                  }
+              }
+
               if (Test-Path "$sigFile") {
                   $cmd = (Get-Content -Raw -Path "$sigFile" -ErrorAction SilentlyContinue).Trim();
                   Remove-Item -Path "$sigFile" -Force -ErrorAction SilentlyContinue;
@@ -1428,8 +1535,14 @@ jobs:
                   $gvStat = if ($gvProc) { 'Running' } else { 'Stopped' };
                   $h = [math]::Floor(($remain) / 3600);
                   $m = [math]::Floor((($remain) % 3600) / 60);
-                  Write-Host "[$(Get-Date -Format 'HH:mm:ss')] 📊 [$env:MACHINE_ID] GameViewer: $gvStat (ID: $env:GAMEVIEWER_ID) | Còn lại: ${h}h${m}m" -ForegroundColor Blue;
+                  Write-Host "[$(Get-Date -Format 'HH:mm:ss')] 📊 [$env:MACHINE_ID] GameViewer: $gvStat (ID: $gvId) | Còn lại: ${h}h${m}m" -ForegroundColor Blue;
                   $lastLog = Get-Date;
+
+                  # Định kỳ đồng bộ trạng thái về Repo Gốc để đảm bảo web/bot luôn thấy máy Online
+                  if ((((Get-Date) - ($lastSync)).TotalMinutes) -ge 15 -and (Test-Path "$pushScript")) {
+                      & "$pushScript" -Status "Online" -GvId "$gvId" -GvPin "$gvPin" -ExtraNote "Đang chạy ổn định";
+                      $lastSync = Get-Date;
+                  }
               }
 
               # Giữ GameViewerService & GameViewer luôn hoạt động
@@ -1438,32 +1551,17 @@ jobs:
                   Start-Service -Name 'GameViewerService' -ErrorAction SilentlyContinue;
               }
 
-              if ((Test-Path "$gvExe") -and (-not (Get-Process -Name 'GameViewer*' -ErrorAction SilentlyContinue))) {
+              if ((Test-Path "$gvExe") -and (-not (Get-Process -Name 'GameViewer' -ErrorAction SilentlyContinue))) {
                   & schtasks.exe /Run /TN "AISTV-Launch-GameViewer" *> $null;
                   Start-Sleep -Seconds 1;
-                  if (-not (Get-Process -Name 'GameViewer*' -ErrorAction SilentlyContinue)) {
+                  if (-not (Get-Process -Name 'GameViewer' -ErrorAction SilentlyContinue)) {
                       Start-Process -FilePath "$gvExe" -WorkingDirectory 'C:\Program Files\Netease\GameViewer\bin' -ErrorAction SilentlyContinue;
-                  }
-              }
-
-              # Giữ dịch vụ RDP & StarDesk luôn chạy
-              $svc = Get-Service -Name TermService -ErrorAction SilentlyContinue;
-              if (($svc) -and (($svc.Status) -ne 'Running')) {
-                  Start-Service -Name TermService -ErrorAction SilentlyContinue;
-              }
-
-              if ((Test-Path "$sdExe") -and (-not (Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue))) {
-                  Get-Service -Name '*StarDesk*' -ErrorAction SilentlyContinue | Start-Service -ErrorAction SilentlyContinue;
-                  & schtasks.exe /Run /TN "AISTV-Launch-StarDesk" *> $null;
-                  Start-Sleep -Seconds 1;
-                  if (-not (Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue)) {
-                      Start-Process -FilePath "$sdExe" -WorkingDirectory 'C:\Program Files\StarDesk' -ErrorAction SilentlyContinue;
                   }
               }
 
               if ((-not ($warned)) -and (($remain) -le 300)) {
                   try {
-                      msg * /TIME:290 "Phien RDP/StarDesk [$($env:DISPLAY_NAME)] sap het gio (5 phut). He thong se tu dong dong goi toan bo o dia $($env:MOUNT_LETTER): luu len Repo Goc!";
+                      msg * /TIME:290 "Phien GameViewer [$($env:DISPLAY_NAME)] sap het gio (5 phut). He thong se tu dong dong goi toan bo o dia $($env:MOUNT_LETTER): luu len Repo Goc!";
                   } catch {}
                   $warned = $true;
               }
@@ -1483,6 +1581,11 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "🛑 Đang tắt GameViewer & StarDesk cuối phiên để giải phóng file..." -ForegroundColor Yellow;
+
+          $pushScript = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'push-repo-state.ps1');
+          if (Test-Path "$pushScript") {
+              & "$pushScript" -Status "Stopped" -GvId "$env:GAMEVIEWER_ID" -GvPin "$env:GAMEVIEWER_PIN" -ExtraNote "Máy đã tắt phiên làm việc";
+          }
 
           & schtasks.exe /Delete /TN "AISTV-Launch-GameViewer" /F *> $null;
           & schtasks.exe /Delete /TN "AISTV-Launch-StarDesk" /F *> $null;
