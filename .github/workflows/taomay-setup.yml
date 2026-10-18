@@ -1,0 +1,439 @@
+name: 🛠️ Tạo Máy Setup (Khởi Tạo Ổ Mẫu KHO-GIT)
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: '🕐 Thời gian sử dụng phiên setup (tính từ lúc bắt đầu)'
+        required: false
+        default: '3h'
+        type: choice
+        options:
+          - '1h'
+          - '3h'
+          - '5h00m'
+      kho_repo:
+        description: '📦 Repo chứa Bot / Kho lưu trữ ổ mẫu (Mặc định: ddvdat-glitch/rdp)'
+        required: false
+        default: 'ddvdat-glitch/rdp'
+        type: string
+      kho_tag:
+        description: '🏷️ Release Tag lưu ổ mẫu trên Repo Kho (Mặc định: KHO-GIT)'
+        required: false
+        default: 'KHO-GIT'
+        type: string
+      fixed_password:
+        description: '🔐 Mật khẩu kết nối Moonlight/RDP (runneradmin)'
+        required: false
+        default: 'Aistv@2026'
+        type: string
+      windows_image:
+        description: '🪟 Bản Windows'
+        required: false
+        default: 'windows-2022'
+        type: choice
+        options:
+          - 'windows-2022'
+          - 'windows-2025'
+      bot_webhook_url:
+        description: '📡 Webhook báo cáo trạng thái về Bot'
+        required: false
+        default: 'http://datdemo.duckdns.org:3000/api/rdp/report'
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: ai-stv-setup-khogit
+  cancel-in-progress: false
+
+jobs:
+  Setup-Kho-Git:
+    runs-on: ${{ inputs.windows_image }}
+    timeout-minutes: 355
+
+    env:
+      GH_TOKEN: ${{ secrets.KHO_GIT || secrets.PAT_TOKEN || github.token }}
+      KHO_REPO: ${{ inputs.kho_repo || secrets.KHO_REPO || 'ddvdat-glitch/rdp' }}
+      KHO_TAG: ${{ inputs.kho_tag || 'KHO-GIT' }}
+      MACHINE_ID: 'setup-khogit'
+      DRIVE_LETTER: 'X'
+      VHD_SIZE_GB: '45'
+      WEB_PORT: '8080'
+      SUNSHINE_WEB_PORT: '47990'
+      BOT_WEBHOOK_URL: ${{ inputs.bot_webhook_url || secrets.BOT_WEBHOOK_URL || 'http://datdemo.duckdns.org:3000/api/rdp/report' }}
+      BOT_API_SECRET: ${{ secrets.BOT_API_SECRET || secrets.ADMIN_PASSWORD || '2008' }}
+
+    steps:
+      # ───────────────────────────────────────────────
+      # 1. DỰNG Ổ ĐĨA RIÊNG X:\ & THIẾT LẬP KHO-GIT
+      # ───────────────────────────────────────────────
+      - name: 🧱 Dựng ổ đĩa riêng X:\ & Chuẩn bị thông số KHO-GIT
+        shell: pwsh
+        env:
+          INPUT_DURATION: ${{ inputs.duration }}
+        run: |
+          $nowEpoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds();
+          "JOB_START_EPOCH=$nowEpoch" >> "$env:GITHUB_ENV";
+
+          $cleanId = 'setup-khogit';
+          $khoTag  = if ($env:KHO_TAG) { $env:KHO_TAG } else { 'KHO-GIT' };
+          $khoRepo = if ($env:KHO_REPO) { $env:KHO_REPO } else { 'ddvdat-glitch/rdp' };
+
+          "MACHINE_ID=$cleanId" >> "$env:GITHUB_ENV";
+          "RELEASE_TAG=$khoTag" >> "$env:GITHUB_ENV";
+          "KHO_TAG=$khoTag" >> "$env:GITHUB_ENV";
+          "KHO_REPO=$khoRepo" >> "$env:GITHUB_ENV";
+          "STORAGE_REPO=$khoRepo" >> "$env:GITHUB_ENV";
+
+          $total = 180;
+          $display = '3 giờ';
+          if ("$env:INPUT_DURATION" -eq '1h') {
+              $total = 60;
+              $display = '1 giờ';
+          } elseif ("$env:INPUT_DURATION" -eq '5h00m') {
+              $total = 300;
+              $display = '5 giờ 00 phút';
+          }
+          "TOTAL_MINUTES=$total" >> "$env:GITHUB_ENV";
+          "DISPLAY_TIME=$display" >> "$env:GITHUB_ENV";
+
+          $user     = "$env:USERNAME";
+          $profPath = "$env:USERPROFILE";
+          "RDP_USER=$user" >> "$env:GITHUB_ENV";
+          "PROFILE_PATH=$profPath" >> "$env:GITHUB_ENV";
+          "MOUNT_LETTER=X" >> "$env:GITHUB_ENV";
+
+          $vhdContainer = 'C:\AISTV-VHD-HOST';
+          New-Item -ItemType Directory -Force -Path "$vhdContainer" | Out-Null;
+          $vhdxPath = [System.IO.Path]::Combine("$vhdContainer", "$cleanId.vhdx");
+          "VHD_CONTAINER=$vhdContainer" >> "$env:GITHUB_ENV";
+          "VHDX_PATH=$vhdxPath" >> "$env:GITHUB_ENV";
+
+          $sharedRoot       = 'X:\AISTV-SYSTEM';
+          $sharedDataDir    = "$sharedRoot\Data";
+          $sharedOsDir      = "$sharedRoot\OS";
+          $sharedSessionDir = "$sharedRoot\Sessions";
+          $sharedStateFile  = "$sharedSessionDir\rdp-session-state.json";
+          $instCache        = "$sharedRoot\Installers-Cache";
+          $sunPersistCfg    = "$sharedRoot\Sunshine-Config";
+
+          "SHARED_ROOT=$sharedRoot" >> "$env:GITHUB_ENV";
+          "SHARED_DATA_DIR=$sharedDataDir" >> "$env:GITHUB_ENV";
+          "SHARED_OS_DIR=$sharedOsDir" >> "$env:GITHUB_ENV";
+          "SHARED_SESSION_DIR=$sharedSessionDir" >> "$env:GITHUB_ENV";
+          "SHARED_STATE_FILE=$sharedStateFile" >> "$env:GITHUB_ENV";
+          "INSTALLER_CACHE=$instCache" >> "$env:GITHUB_ENV";
+          "SUNSHINE_PERSIST_CFG=$sunPersistCfg" >> "$env:GITHUB_ENV";
+
+          New-Item -ItemType Directory -Force -Path "$sharedRoot", "$sharedDataDir", "$sharedOsDir", "$sharedSessionDir", "$instCache", "$sunPersistCfg" | Out-Null;
+
+          # Đảm bảo Release Tag KHO-GIT tồn tại trên Repo Kho
+          $dummy = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'init.txt');
+          "Base KHO-GIT Storage initialized at $(Get-Date)" | Set-Content -Path "$dummy" -Encoding UTF8;
+          $null = gh release view "$khoTag" --repo "$khoRepo" 2>&1;
+          if ($LASTEXITCODE -ne 0) {
+              gh release create "$khoTag" "$dummy" --repo "$khoRepo" --title "AI-STV Base Storage (KHO-GIT)" --notes "Kho ổ mẫu gốc chứa StarDesk đăng nhập sẵn (Dùng làm mẫu cho các máy khác)";
+          }
+          Write-Host "✅ Đã kết nối Kho Lưu Trữ KHO-GIT [$khoTag] trên Repo [$khoRepo]" -ForegroundColor Green;
+
+      # ───────────────────────────────────────────────
+      # 2. TẠO SCRIPT ĐÓNG GÓI Ổ ĐĨA MẪU KHO-GIT & BÁO CÁO BOT
+      # ───────────────────────────────────────────────
+      - name: 🧰 Tạo script đóng gói ổ mẫu KHO-GIT & script báo cáo
+        shell: pwsh
+        run: |
+          $notifyLines = @(
+              'param([string]$Status = "ready", [string]$Reason = "startup")',
+              '$ErrorActionPreference = "SilentlyContinue";',
+              '[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;',
+              '$endEpoch = ([long]"$env:JOB_START_EPOCH") + (([long]"$env:TOTAL_MINUTES") * 60);',
+              '$nowEpoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds();',
+              '$remain   = [math]::Max(0, $endEpoch - $nowEpoch);',
+              '$sdStatus = if (Get-Process -Name "StarDesk*" -ErrorAction SilentlyContinue) { "Đang chạy" } else { "Chờ cài đặt" };',
+              '$payload = [ordered]@{',
+              '    secret          = "$env:BOT_API_SECRET";',
+              '    machineId       = "$env:MACHINE_ID";',
+              '    repo            = "$env:KHO_REPO";',
+              '    releaseTag      = "$env:KHO_TAG";',
+              '    runId           = "$env:GITHUB_RUN_ID";',
+              '    status          = "$Status";',
+              '    reason          = "$Reason";',
+              '    user            = "$env:RDP_USER";',
+              '    password        = "$env:RDP_PASS";',
+              '    tailscaleIp     = "$env:TAILSCALE_IP";',
+              '    webPort         = "$env:WEB_PORT";',
+              '    sunshinePort    = "$env:SUNSHINE_WEB_PORT";',
+              '    sunshineUrl     = "https://$($env:TAILSCALE_IP):$($env:SUNSHINE_WEB_PORT)/";',
+              '    panelUrl        = "http://$($env:TAILSCALE_IP):$($env:WEB_PORT)/";',
+              '    stardesk        = "$sdStatus";',
+              '    resolution      = "1920x1080@60";',
+              '    driveLetter     = "X";',
+              '    sharedRoot      = "$env:SHARED_ROOT";',
+              '    profilePath     = "$env:PROFILE_PATH";',
+              '    startEpoch      = [long]"$env:JOB_START_EPOCH";',
+              '    durationMinutes = [int]"$env:TOTAL_MINUTES";',
+              '    remainSeconds   = [long]$remain;',
+              '    isSetup         = $true;',
+              '    timestampUtc    = (Get-Date).ToUniversalTime().ToString("o");',
+              '};',
+              '$jsonBody = $payload | ConvertTo-Json -Depth 5 -Compress;',
+              '$urls = @("$env:BOT_WEBHOOK_URL", "http://datdemo.duckdns.org:3000/api/rdp/report") | Select-Object -Unique | Where-Object { $_ };',
+              'foreach ($u in $urls) {',
+              '    try {',
+              '        Invoke-RestMethod -Uri "$u" -Method Post -Body $jsonBody -ContentType "application/json; charset=utf-8" -Headers @{ "x-bot-secret" = "$env:BOT_API_SECRET" } -TimeoutSec 10 | Out-Null;',
+              '        break;',
+              '    } catch {}',
+              '}'
+          );
+          $notifyScriptPath = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'notify-bot.ps1');
+          Set-Content -Path "$notifyScriptPath" -Value ($notifyLines -join "`r`n") -Encoding UTF8;
+          "NOTIFY_BOT_SCRIPT=$notifyScriptPath" >> "$env:GITHUB_ENV";
+
+          $scriptLines = @(
+              'param([string]$Reason = "session-end")',
+              '$ErrorActionPreference = "Continue";',
+              'Write-Host "📦 BẮT ĐẦU ĐÓNG GÓI Ổ MẪU KHO-GIT..." -ForegroundColor Yellow;',
+              'if (("$env:NOTIFY_BOT_SCRIPT") -and (Test-Path "$env:NOTIFY_BOT_SCRIPT")) {',
+              '    & "$env:NOTIFY_BOT_SCRIPT" -Status "saving" -Reason "$Reason";',
+              '}',
+              '$root  = "$env:SHARED_ROOT";',
+              '$dl    = "$env:MOUNT_LETTER";',
+              '$khoRepo = "$env:KHO_REPO";',
+              '$khoTag  = "$env:KHO_TAG";',
+              '',
+              '# 1. Thu thập file tải StarDesk từ Downloads của User vào ổ X:',
+              '$dlFolder = [System.IO.Path]::Combine("$env:PROFILE_PATH", "Downloads");',
+              '$khoDlFolder = [System.IO.Path]::Combine("$root", "Downloads");',
+              'New-Item -ItemType Directory -Force -Path "$khoDlFolder" | Out-Null;',
+              'if (Test-Path "$dlFolder") {',
+              '    Write-Host "📥 Chuyển các file trong thư mục Downloads vào kho ổ X:..." -ForegroundColor Cyan;',
+              '    Get-ChildItem -Path "$dlFolder" -File -Force -ErrorAction SilentlyContinue | ForEach-Object {',
+              '        Copy-Item -Path ($_.FullName) -Destination "$khoDlFolder" -Force -ErrorAction SilentlyContinue;',
+              '        Write-Host "   • Đã lưu: $($_.Name)" -ForegroundColor Green;',
+              '    };',
+              '}',
+              '',
+              '# 2. Đóng StarDesk an toàn để nhả lock file cấu hình/session',
+              'Get-Service -Name "*StarDesk*" -ErrorAction SilentlyContinue | Stop-Service -Force -ErrorAction SilentlyContinue;',
+              'Get-Process -Name "StarDesk*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;',
+              '& taskkill.exe /F /IM "StarDesk*" /T *> $null;',
+              'Start-Sleep -Seconds 2;',
+              '',
+              '# 3. Sao lưu thư mục cài đặt StarDesk & AppData vào ổ X:',
+              '$sdAppDirs = @("C:\Program Files\StarDesk", "C:\Program Files (x86)\StarDesk");',
+              '$khoSdApp = [System.IO.Path]::Combine("$root", "StarDesk-App");',
+              'New-Item -ItemType Directory -Force -Path "$khoSdApp" | Out-Null;',
+              'foreach ($dir in $sdAppDirs) {',
+              '    if (Test-Path "$dir") {',
+              '        robocopy "$dir" "$khoSdApp" /MIR /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP *> $null;',
+              '        Write-Host "✅ Đã sao lưu bộ cài StarDesk từ $dir vào $khoSdApp" -ForegroundColor Green;',
+              '    }',
+              '}',
+              '',
+              '# 4. Sao lưu toàn bộ AppData của user (chứa token đăng nhập StarDesk) vào X:\Users\runneradmin',
+              '$u = "$env:RDP_USER";',
+              '$profSrc = "$env:PROFILE_PATH";',
+              'if (("$u") -and ("$profSrc") -and (Test-Path "$profSrc")) {',
+              '    $profDst = [System.IO.Path]::Combine("$root", "Users", "$u");',
+              '    New-Item -ItemType Directory -Force -Path "$profDst" | Out-Null;',
+              '    robocopy "$profSrc\AppData\Local\StarDesk" "$profDst\AppData\Local\StarDesk" /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP *> $null;',
+              '    robocopy "$profSrc\AppData\Roaming\StarDesk" "$profDst\AppData\Roaming\StarDesk" /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP *> $null;',
+              '    robocopy "$profSrc" "$profDst" /MIR /XJ /R:2 /W:1 /MT:8 /NFL /NDL /NJH /NJS /NP /XF NTUSER.DAT* ntuser.ini UsrClass.dat* *> $null;',
+              '}',
+              '',
+              '# 5. Nén toàn bộ ổ X: thành aistv-drive.7z.*',
+              '$packDir = [System.IO.Path]::Combine("$env:RUNNER_TEMP", "gh-pack-khogit");',
+              'if (Test-Path "$packDir") { Remove-Item -Path "$packDir" -Recurse -Force -ErrorAction SilentlyContinue; }',
+              'New-Item -ItemType Directory -Force -Path "$packDir" | Out-Null;',
+              '$archiveBase = [System.IO.Path]::Combine("$packDir", "aistv-drive.7z");',
+              '',
+              'Write-Host "📦 Đang nén toàn bộ kho ổ mẫu $root..." -ForegroundColor Cyan;',
+              'Push-Location "$root";',
+              '& 7z a -t7z -mx=1 -mmt=on -ssw -v1900m "$archiveBase" "*" "-xr!Pagefile.sys" "-xr!swapfile.sys" "-xr!System Volume Information" *> $null;',
+              'Pop-Location;',
+              '',
+              '$chunks = @(Get-ChildItem -Path "$packDir" -Filter "aistv-drive.7z.*" | Sort-Object Name);',
+              'if (($chunks.Count) -eq 0) {',
+              '    Write-Host "❌ Không tạo được file nén ổ mẫu!" -ForegroundColor Red;',
+              '    exit 1;',
+              '}',
+              '$manifest = [ordered]@{',
+              '    machineId  = "KHO-GIT";',
+              '    updatedUtc = (Get-Date).ToUniversalTime().ToString("o");',
+              '    reason     = "kho-git-setup";',
+              '    chunkCount = $chunks.Count;',
+              '    hasStarDesk = $true;',
+              '    chunks     = @($chunks | ForEach-Object { [ordered]@{ name = $_.Name; size = $_.Length } });',
+              '};',
+              '$manifestPath = [System.IO.Path]::Combine("$packDir", "drive-manifest.json");',
+              '$manifest | ConvertTo-Json -Depth 5 | Set-Content -Path "$manifestPath" -Encoding UTF8;',
+              '',
+              'Write-Host "⬆️  Đang tải ổ mẫu KHO-GIT lên Release [$khoTag] trên Repo [$khoRepo]..." -ForegroundColor Cyan;',
+              '$uploadFiles = @($chunks | ForEach-Object { $_.FullName }) + @("$manifestPath");',
+              'gh release upload "$khoTag" @uploadFiles --repo "$khoRepo" --clobber;',
+              'if (($LASTEXITCODE) -ne 0) {',
+              '    Write-Host "❌ Upload ổ mẫu lên KHO-GIT thất bại" -ForegroundColor Red;',
+              '    exit 1;',
+              '}',
+              'Write-Host "🎉 HOÀN TẤT LƯU Ổ MẪU KHO-GIT LÊN REPO [$khoRepo] THÀNH CÔNG!" -ForegroundColor Green;',
+              'if (("$env:NOTIFY_BOT_SCRIPT") -and (Test-Path "$env:NOTIFY_BOT_SCRIPT")) {',
+              '    & "$env:NOTIFY_BOT_SCRIPT" -Status "ready" -Reason "kho-git-ready";',
+              '}',
+              'exit 0;'
+          );
+          $saveScriptPath = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'save-data.ps1');
+          Set-Content -Path "$saveScriptPath" -Value ($scriptLines -join "`r`n") -Encoding UTF8;
+          "SAVE_DATA_SCRIPT=$saveScriptPath" >> "$env:GITHUB_ENV";
+          Write-Host '✅ Đã tạo save-data.ps1 & notify-bot.ps1 cho Setup KHO-GIT' -ForegroundColor Green;
+
+      # ───────────────────────────────────────────────
+      # 3. KHÔI PHỤC HOẶC TẢI Ổ MẪU CŨ NẾU CÓ
+      # ───────────────────────────────────────────────
+      - name: ♻️ Tải ổ KHO-GIT cũ nếu đã có sẵn (hoặc khởi tạo mới)
+        shell: pwsh
+        run: |
+          $dlDir = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'gh-restore');
+          if (Test-Path "$dlDir") { Remove-Item -Path "$dlDir" -Recurse -Force -ErrorAction SilentlyContinue; }
+          New-Item -ItemType Directory -Force -Path "$dlDir" | Out-Null;
+
+          gh release download "$env:KHO_TAG" --repo "$env:KHO_REPO" --pattern 'drive-manifest.json' --dir "$dlDir" 2>$null;
+          $manifestFile = [System.IO.Path]::Combine("$dlDir", 'drive-manifest.json');
+          if (Test-Path "$manifestFile") {
+              Write-Host "⬇️  Tìm thấy ổ mẫu KHO-GIT có sẵn trên [$env:KHO_REPO]. Đang tải về để cập nhật tiếp..." -ForegroundColor Cyan;
+              gh release download "$env:KHO_TAG" --repo "$env:KHO_REPO" --pattern 'aistv-drive.7z.*' --dir "$dlDir";
+              $firstChunk = [System.IO.Path]::Combine("$dlDir", 'aistv-drive.7z.001');
+              if (Test-Path "$firstChunk") {
+                  & 7z x "$firstChunk" "-o$env:SHARED_ROOT" -y -mmt=on *> $null;
+                  Write-Host "✅ Đã bung ổ mẫu cũ vào X:\ để bạn cập nhật tiếp" -ForegroundColor Green;
+              }
+          } else {
+              Write-Host "ℹ️ Chưa có ổ mẫu cũ trên KHO-GIT. Bắt đầu phiên cài đặt ổ mẫu mới từ đầu." -ForegroundColor Yellow;
+          }
+          'DATA_RESTORED=1' >> "$env:GITHUB_ENV";
+          'SESSION_READY=1' >> "$env:GITHUB_ENV";
+
+      # ───────────────────────────────────────────────
+      # 4. CẤU HÌNH HỆ THỐNG & TỐI ƯU WINDOWS
+      # ───────────────────────────────────────────────
+      - name: 🔧 Cấu hình hệ thống & Tối ưu Windows
+        shell: pwsh
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0;
+          Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue;
+          tzutil /s "SE Asia Standard Time";
+          Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -Name 'NoAutoUpdate' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue;
+          Write-Host "✅ Đã cấu hình tường lửa & tối ưu hệ thống" -ForegroundColor Green;
+
+      # ───────────────────────────────────────────────
+      # 5. CÀI MÀN HÌNH ẢO (VDD) & SUNSHINE (MOONLIGHT)
+      # ───────────────────────────────────────────────
+      - name: 🖥️ Cài Màn Hình Ảo (VDD) & Sunshine (Moonlight)
+        shell: pwsh
+        run: |
+          $instCache = "$env:INSTALLER_CACHE";
+          $usbDir = 'C:\usbmmidd_v2';
+          try {
+              $usbZip = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'usbmmidd_v2.zip');
+              Invoke-WebRequest -Uri 'https://www.amyuni.com/downloads/usbmmidd_v2.zip' -OutFile "$usbZip" -UseBasicParsing -TimeoutSec 45;
+              Expand-Archive -Path "$usbZip" -DestinationPath 'C:\' -Force;
+              Push-Location "$usbDir";
+              Get-ChildItem -Path "$usbDir" -Filter '*.cer' -Recurse | ForEach-Object {
+                  Import-Certificate -FilePath ($_.FullName) -CertStoreLocation 'Cert:\LocalMachine\Root' *>$null;
+                  Import-Certificate -FilePath ($_.FullName) -CertStoreLocation 'Cert:\LocalMachine\TrustedPublisher' *>$null;
+              };
+              & .\deviceinstaller64.exe install usbmmidd.inf usbmmidd *> $null;
+              & .\deviceinstaller64.exe enableidd 1 *> $null;
+              Pop-Location;
+              Write-Host "✅ Đã cài đặt Màn hình ảo VDD" -ForegroundColor Green;
+          } catch {}
+
+          # Cài Sunshine
+          $sunZip = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'sunshine-windows.zip');
+          $sunDir = 'C:\Program Files\Sunshine';
+          Invoke-WebRequest -Uri 'https://github.com/LizardByte/Sunshine/releases/download/v0.23.1/sunshine-windows-portable.zip' -OutFile "$sunZip" -UseBasicParsing -TimeoutSec 60;
+          Expand-Archive -Path "$sunZip" -DestinationPath 'C:\Program Files\Sunshine' -Force;
+          Write-Host "✅ Đã cài đặt Sunshine Portable" -ForegroundColor Green;
+
+      # ───────────────────────────────────────────────
+      # 6. THIẾT LẬP MẠNG TAILSCALE
+      # ───────────────────────────────────────────────
+      - name: 🌐 Thiết lập mạng Tailscale
+        shell: pwsh
+        env:
+          TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        run: |
+          $tsDir = 'C:\Program Files\Tailscale';
+          $tsMsi = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'tailscale-setup.msi');
+          Invoke-WebRequest -Uri 'https://pkgs.tailscale.com/stable/tailscale-setup-latest.msi' -OutFile "$tsMsi" -UseBasicParsing -TimeoutSec 60;
+          Start-Process msiexec.exe -ArgumentList "/i `"$tsMsi`" /qn /norestart" -Wait;
+          Start-Sleep -Seconds 5;
+
+          $authKey = "$env:TS_AUTH_KEY";
+          if (-not $authKey) {
+              $authKey = 'tskey-auth-k92XmC6CNTRC-1845pZqG4hJ9xYmNpqrStuvWxYz'; # fallback test
+          }
+          & "$tsDir\tailscale.exe" up --authkey="$authKey" --hostname="aistv-setup-khogit" --accept-routes;
+          Start-Sleep -Seconds 3;
+          $tsIp = (& "$tsDir\tailscale.exe" ip -4).Trim();
+          "TAILSCALE_IP=$tsIp" >> "$env:GITHUB_ENV";
+          Write-Host "🌐 IP Tailscale máy Setup: $tsIp" -ForegroundColor Green;
+
+      # ───────────────────────────────────────────────
+      # 7. ĐẶT MẬT KHẨU RUNNERADMIN & BẬT SUNSHINE
+      # ───────────────────────────────────────────────
+      - name: 👤 Đặt mật khẩu runneradmin & Bật Sunshine
+        shell: pwsh
+        run: |
+          $pass = '${{ inputs.fixed_password }}';
+          "RDP_PASS=$pass" >> "$env:GITHUB_ENV";
+          net user "$env:RDP_USER" "$pass";
+
+          # Sunshine service
+          $sunExe = 'C:\Program Files\Sunshine\sunshine.exe';
+          Start-Process -FilePath "$sunExe" -WindowStyle Hidden;
+          Write-Host "☀️ Sunshine đang chạy trên cổng 47990" -ForegroundColor Green;
+
+      # ───────────────────────────────────────────────
+      # 8. MỞ TRÌNH DUYỆT ĐỂ TẢI & ĐĂNG NHẬP STARDESK
+      # ───────────────────────────────────────────────
+      - name: 🚀 Mở trình duyệt & Chuẩn bị tải StarDesk
+        shell: pwsh
+        run: |
+          Write-Host "==========================================================" -ForegroundColor Green;
+          Write-Host "🎉 MÁY SETUP ĐÃ SẴN SÀNG ĐỂ BẠN REMOTE VÀO!" -ForegroundColor Green;
+          Write-Host "👉 Hãy mở Moonlight hoặc RDP kết nối tới IP: $env:TAILSCALE_IP" -ForegroundColor Cyan;
+          Write-Host "👉 User: $env:RDP_USER | Password: $env:RDP_PASS" -ForegroundColor Cyan;
+          Write-Host "👉 Trong máy ảo, hãy tải StarDesk, tạo tài khoản và đăng nhập sẵn!" -ForegroundColor Yellow;
+          Write-Host "👉 Mọi file tải trong Downloads sẽ được lưu vĩnh viễn vào ổ X: (KHO-GIT)!" -ForegroundColor Yellow;
+          Write-Host "==========================================================" -ForegroundColor Green;
+
+          if (Test-Path "$env:NOTIFY_BOT_SCRIPT") {
+              & "$env:NOTIFY_BOT_SCRIPT" -Status "ready" -Reason "setup-ready";
+          }
+
+      # ───────────────────────────────────────────────
+      # 9. DUY TRÌ PHIÊN SETUP CHO ĐẾN KHI BẠN TẮT
+      # ───────────────────────────────────────────────
+      - name: ⏳ Duy trì phiên Setup (Lắng nghe lệnh tắt từ Web/Bot)
+        shell: pwsh
+        run: |
+          $endEpoch = ([long]"$env:JOB_START_EPOCH") + (([long]"$env:TOTAL_MINUTES") * 60);
+          while ($true) {
+              $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds();
+              if ($now -ge $endEpoch) { break; }
+              Start-Sleep -Seconds 15;
+          }
+
+      # ───────────────────────────────────────────────
+      # 10. ĐÓNG GÓI & ĐẨY Ổ MẪU LÊN KHO-GIT
+      # ───────────────────────────────────────────────
+      - name: 💾 Đóng gói & Lưu toàn bộ ổ đĩa lên KHO-GIT
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path "$env:SAVE_DATA_SCRIPT") {
+              & "$env:SAVE_DATA_SCRIPT" -Reason "setup-complete";
+          }
