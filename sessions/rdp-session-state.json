@@ -1,0 +1,16 @@
+{
+  "machineId": "may-goc",
+  "releaseTag": "aistv-storage-may-goc",
+  "user": "runneradmin",
+  "sid": "S-1-5-21-3213014087-2684668049-2838998412-500",
+  "password": null,
+  "passwordSource": "secret",
+  "windowsImage": "windows-2022",
+  "osBuild": "20348",
+  "driveLetter": "X",
+  "tailscaleIp": "100.122.72.127",
+  "durationMinutes": 300,
+  "startUtc": "2026-10-18T10:33:53.7940692Z",
+  "runId": "39119618257",
+  "lastUpdatedUtc": "2026-10-18T10:49:58.3207797Z"
+}
