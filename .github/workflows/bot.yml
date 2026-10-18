@@ -57,6 +57,7 @@ jobs:
       ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
       GH_TOKEN: ${{ github.token }}
       # Token cá nhân (PAT: repo + workflow) để lệnh !may tạo file workflow mới & chạy action. Không có thì !may chỉ liệt kê/chạy/đọc log được.
+      PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
       RDP_GH_TOKEN: ${{ secrets.PAT_TOKEN }}
       DUCKDNS_TOKEN: ${{ secrets.DUCKDNS_TOKEN }}
       DUCKDNS_DOMAIN: ${{ inputs.duckdns_domain || 'datdemo.duckdns.org' }}
