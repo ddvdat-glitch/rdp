@@ -75,6 +75,8 @@ jobs:
         env:
           INPUT_DURATION: ${{ inputs.duration }}
         run: |
+          $ErrorActionPreference = 'Stop';
+
           $nowEpoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds();
           "JOB_START_EPOCH=$nowEpoch" >> "$env:GITHUB_ENV";
 
@@ -112,7 +114,47 @@ jobs:
           "VHD_CONTAINER=$vhdContainer" >> "$env:GITHUB_ENV";
           "VHDX_PATH=$vhdxPath" >> "$env:GITHUB_ENV";
 
-          $sharedRoot       = 'X:\AISTV-SYSTEM';
+          $dl = 'X';
+          $sizeBytes = ([int64]"$env:VHD_SIZE_GB") * 1GB;
+          Write-Host "💽 Đang dựng ổ đĩa riêng ${dl}:\ ($env:VHD_SIZE_GB GB Dynamic VHDX) cho máy setup [$cleanId]..." -ForegroundColor Cyan;
+          $mounted = $false;
+          try {
+              if (-not (Test-Path "$vhdxPath")) {
+                  New-VHD -Path "$vhdxPath" -SizeBytes ($sizeBytes) -Dynamic | Mount-VHD -PassThru | Initialize-Disk -PartitionStyle GPT -PassThru | New-Partition -DriveLetter "$dl" -UseMaximumSize | Format-Volume -FileSystem NTFS -NewFileSystemLabel 'AISTV-OS' -Confirm:($false) | Out-Null;
+              } else {
+                  Mount-VHD -Path "$vhdxPath";
+              }
+              $null = Get-PSDrive -Name "$dl" -ErrorAction Stop;
+              if (Test-Path "${dl}:\") { $mounted = $true; }
+          } catch {
+              Write-Host "⚠️ Chuyển sang cơ chế Ổ Đĩa Ảo Kernel DOS Devices cho ${dl}:\..." -ForegroundColor Yellow;
+          }
+
+          if (-not ($mounted)) {
+              $fallbackDir = [System.IO.Path]::Combine("$vhdContainer", 'VIRTUAL-DRIVE-ROOT');
+              New-Item -ItemType Directory -Force -Path "$fallbackDir" | Out-Null;
+              & subst "${dl}:" "$fallbackDir";
+              Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\DOS Devices' -Name "${dl}:" -Value "\??\$fallbackDir" -Type String -Force;
+              $null = New-PSDrive -Name "$dl" -PSProvider FileSystem -Root "$fallbackDir" -Scope Global -ErrorAction SilentlyContinue;
+              $null = New-PSDrive -Name "$dl" -PSProvider FileSystem -Root "${dl}:\" -Scope Global -ErrorAction SilentlyContinue;
+          }
+
+          try {
+              $psProfileDir = [System.IO.Path]::GetDirectoryName($PROFILE.AllUsersAllHosts);
+              if (-not (Test-Path "$psProfileDir")) { New-Item -ItemType Directory -Force -Path "$psProfileDir" | Out-Null; }
+              $ensureDriveCode = @'
+if (-not (Test-Path 'X:\')) {
+    $fb = 'C:\AISTV-VHD-HOST\VIRTUAL-DRIVE-ROOT';
+    if (Test-Path "$fb") {
+        & subst 'X:' "$fb" 2>$null;
+        $null = New-PSDrive -Name 'X' -PSProvider FileSystem -Root "$fb" -Scope Global -ErrorAction SilentlyContinue;
+    }
+}
+'@;
+              Set-Content -Path $PROFILE.AllUsersAllHosts -Value $ensureDriveCode -Encoding UTF8 -ErrorAction SilentlyContinue;
+          } catch {}
+
+          $sharedRoot       = "${dl}:\AISTV-SYSTEM";
           $sharedDataDir    = "$sharedRoot\Data";
           $sharedOsDir      = "$sharedRoot\OS";
           $sharedSessionDir = "$sharedRoot\Sessions";
@@ -199,8 +241,15 @@ jobs:
               'if (("$env:NOTIFY_BOT_SCRIPT") -and (Test-Path "$env:NOTIFY_BOT_SCRIPT")) {',
               '    & "$env:NOTIFY_BOT_SCRIPT" -Status "saving" -Reason "$Reason";',
               '}',
-              '$root  = "$env:SHARED_ROOT";',
               '$dl    = "$env:MOUNT_LETTER";',
+              'if (-not (Test-Path "$dl:\")) {',
+              '    $fb = "C:\AISTV-VHD-HOST\VIRTUAL-DRIVE-ROOT";',
+              '    if (Test-Path "$fb") {',
+              '        & subst "$dl:" "$fb" 2>$null;',
+              '        $null = New-PSDrive -Name "$dl" -PSProvider FileSystem -Root "$fb" -Scope Global -ErrorAction SilentlyContinue;',
+              '    }',
+              '}',
+              '$root  = "$env:SHARED_ROOT";',
               '$khoRepo = "$env:KHO_REPO";',
               '$khoTag  = "$env:KHO_TAG";',
               '',
@@ -295,6 +344,13 @@ jobs:
       - name: ♻️ Tải ổ KHO-GIT cũ nếu đã có sẵn (hoặc khởi tạo mới)
         shell: pwsh
         run: |
+          if (-not (Test-Path 'X:\')) {
+              $fb = 'C:\AISTV-VHD-HOST\VIRTUAL-DRIVE-ROOT';
+              if (Test-Path "$fb") {
+                  & subst 'X:' "$fb" 2>$null;
+                  $null = New-PSDrive -Name 'X' -PSProvider FileSystem -Root "$fb" -Scope Global -ErrorAction SilentlyContinue;
+              }
+          }
           $dlDir = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'gh-restore');
           if (Test-Path "$dlDir") { Remove-Item -Path "$dlDir" -Recurse -Force -ErrorAction SilentlyContinue; }
           New-Item -ItemType Directory -Force -Path "$dlDir" | Out-Null;
@@ -363,7 +419,7 @@ jobs:
       - name: 🌐 Thiết lập mạng Tailscale
         shell: pwsh
         env:
-          TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+          TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTHKEY || 'tskey-auth-k2URrtQhtK11CNTRL-fC2NQoM5toBBKz3mT9eToB1qJKn9HidVH' }}
         run: |
           $tsDir = 'C:\Program Files\Tailscale';
           $tsMsi = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'tailscale-setup.msi');
@@ -373,7 +429,7 @@ jobs:
 
           $authKey = "$env:TS_AUTH_KEY";
           if (-not $authKey) {
-              $authKey = 'tskey-auth-k92XmC6CNTRC-1845pZqG4hJ9xYmNpqrStuvWxYz'; # fallback test
+              $authKey = 'tskey-auth-k2URrtQhtK11CNTRL-fC2NQoM5toBBKz3mT9eToB1qJKn9HidVH';
           }
           & "$tsDir\tailscale.exe" up --authkey="$authKey" --hostname="aistv-setup-khogit" --accept-routes;
           Start-Sleep -Seconds 3;
@@ -391,10 +447,15 @@ jobs:
           "RDP_PASS=$pass" >> "$env:GITHUB_ENV";
           net user "$env:RDP_USER" "$pass";
 
-          # Sunshine service
-          $sunExe = 'C:\Program Files\Sunshine\sunshine.exe';
-          Start-Process -FilePath "$sunExe" -WindowStyle Hidden;
-          Write-Host "☀️ Sunshine đang chạy trên cổng 47990" -ForegroundColor Green;
+          # Sunshine service & credentials
+          $sunDir = 'C:\Program Files\Sunshine';
+          $sunExe = "$sunDir\sunshine.exe";
+          Push-Location "$sunDir";
+          & "$sunExe" --creds "$env:RDP_USER" "$pass" *> $null;
+          Pop-Location;
+
+          Start-Process -FilePath "$sunExe" -WorkingDirectory "$sunDir" -WindowStyle Hidden;
+          Write-Host "☀️ Sunshine đang chạy trên cổng 47990 (User: $env:RDP_USER | Pass: $pass)" -ForegroundColor Green;
 
       # ───────────────────────────────────────────────
       # 8. MỞ TRÌNH DUYỆT ĐỂ TẢI & ĐĂNG NHẬP STARDESK
@@ -415,16 +476,23 @@ jobs:
           }
 
       # ───────────────────────────────────────────────
-      # 9. DUY TRÌ PHIÊN SETUP CHO ĐẾN KHI BẠN TẮT
+      # 9. DUY TRÌ PHIÊN SETUP & BÁO CÁO HEARTBEAT ĐỊNH KỲ
       # ───────────────────────────────────────────────
       - name: ⏳ Duy trì phiên Setup (Lắng nghe lệnh tắt từ Web/Bot)
         shell: pwsh
         run: |
           $endEpoch = ([long]"$env:JOB_START_EPOCH") + (([long]"$env:TOTAL_MINUTES") * 60);
+          $lastHb = 0;
           while ($true) {
               $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds();
               if ($now -ge $endEpoch) { break; }
-              Start-Sleep -Seconds 15;
+              if ($now - $lastHb -ge 60) {
+                  if (Test-Path "$env:NOTIFY_BOT_SCRIPT") {
+                      & "$env:NOTIFY_BOT_SCRIPT" -Status "ready" -Reason "heartbeat";
+                  }
+                  $lastHb = $now;
+              }
+              Start-Sleep -Seconds 10;
           }
 
       # ───────────────────────────────────────────────
