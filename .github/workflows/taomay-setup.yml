@@ -1,4 +1,4 @@
-name: 🛠️ Tạo Máy Setup (Khởi Tạo Ổ Mẫu KHO-GIT)
+name: 🛠️ Tạo Máy Setup 
 
 on:
   workflow_dispatch:
