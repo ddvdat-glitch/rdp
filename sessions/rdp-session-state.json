@@ -1,0 +1,20 @@
+{
+  "machineId": "thunghiem",
+  "displayName": "Máy thunghiem",
+  "releaseTag": "aistv-storage-thunghiem",
+  "stateBranch": "aistv-state-thunghiem",
+  "storageRepo": "ddvdat-glitch/rdp",
+  "runnerRepo": "ohohhoho82-alt/app",
+  "runId": "39131630331",
+  "user": "runneradmin",
+  "password": "Aistv@2026",
+  "driveLetter": "X",
+  "sharedRoot": "X:\\AISTV-SYSTEM",
+  "stardeskId": "(Xem trực tiếp trên giao diện)",
+  "windowsImage": "windows-2022",
+  "osBuild": "20348",
+  "webPort": "8080",
+  "startedAtUtc": "2026-10-18T13:30:14.8431391Z",
+  "startEpoch": 1792330059,
+  "durationMinutes": 300
+}
