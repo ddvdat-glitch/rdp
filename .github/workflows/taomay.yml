@@ -1260,6 +1260,8 @@ jobs:
           $sdStatus = if (Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue) { 'Đang chạy (Sẵn sàng)' } else { 'Chờ khởi tạo' };
           $stardeskId = if ("$env:STARDESK_ID") { "$env:STARDESK_ID" } else { '(Xem trực tiếp)' };
 
+          [Console]::WriteLine("::notice title=STARDESK::ID=$stardeskId | USER=$env:RDP_USER | PASS=$passText | REPO=$env:STORAGE_REPO | RUNNER=$env:RUNNER_REPO");
+
           Write-Host "";
           Write-Host "┌──────────────────────────────────────────────────────────┐" -ForegroundColor Cyan;
           Write-Host "│           🎉 RDP & STARDESK MÁY ẢO ĐÃ SẴN SÀNG!          │" -ForegroundColor Cyan;
