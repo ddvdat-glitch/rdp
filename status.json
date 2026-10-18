@@ -1,8 +1,8 @@
 {
   "machineId": "dat",
   "displayName": "Máy dat",
-  "status": "Stopped",
-  "isOnline": false,
+  "status": "Online",
+  "isOnline": true,
   "deviceId": "680319878",
   "gvId": "680319878",
   "pin": "Aistv2026",
@@ -11,9 +11,9 @@
   "user": "runneradmin",
   "runnerRepo": "ohohhoho82-alt/app",
   "storageRepo": "ddvdat-glitch/rdp",
-  "runId": "39146504947",
-  "updatedUtc": "2026-10-18T18:26:56.7646107Z",
-  "updatedVn": "2026-10-19 01:26:56 (UTC+7)",
+  "runId": "39154148459",
+  "updatedUtc": "2026-10-18T18:34:16.6348127Z",
+  "updatedVn": "2026-10-19 01:34:16 (UTC+7)",
   "durationMinutes": 300,
-  "note": "Máy đã tắt phiên làm việc"
+  "note": "Đã mở GameViewer và StarDesk"
 }
