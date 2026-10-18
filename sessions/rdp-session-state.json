@@ -1,0 +1,20 @@
+{
+  "machineId": "thu",
+  "displayName": "Máy thu",
+  "releaseTag": "aistv-storage-thu",
+  "stateBranch": "aistv-state-thu",
+  "storageRepo": "ddvdat-glitch/rdp",
+  "runnerRepo": "ohohhoho82-alt/app",
+  "runId": "39129883618",
+  "user": "runneradmin",
+  "password": "Aistv@2026",
+  "driveLetter": "X",
+  "sharedRoot": "X:\\AISTV-SYSTEM",
+  "stardeskId": "(Xem trực tiếp trên giao diện)",
+  "windowsImage": "windows-2022",
+  "osBuild": "20348",
+  "webPort": "8080",
+  "startedAtUtc": "2026-10-18T13:06:09.4489821Z",
+  "startEpoch": 1792328613,
+  "durationMinutes": 300
+}
