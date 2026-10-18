@@ -328,7 +328,7 @@ jobs:
               '        "$profSrc\AppData\Local\Microsoft\Windows\Caches",',
               '        "$profSrc\AppData\Local\D3DSCache"',
               '    );',
-              '    robocopy "$profSrc" "$profDst" /MIR /XJ /R:2 /W:1 /MT:8 /NFL /NDL /NJH /NJS /NP /XF NTUSER.DAT* ntuser.ini UsrClass.dat* WebCacheV01.dat parent.lock lockfile SingletonLock SingletonCookie SingletonSocket /XD @excludeDirs *> $null;',
+              '    robocopy "$profSrc" "$profDst" /MIR /XJ /R:2 /W:1 /MT:8 /NFL /NDL /NJH /NJS /NP /XF NTUSER.DAT* ntuser.ini UsrClass.dat* WebCacheV01.dat parent.lock lockfile SingletonLock SingletonCookie SingletonSocket /XD $excludeDirs *> $null;',
               '    $global:LASTEXITCODE = 0;',
               '}',
               'if (("$env:BASELINE_FILE") -and (Test-Path "$env:BASELINE_FILE")) {',
@@ -689,6 +689,17 @@ jobs:
                   }
               }
               if (Test-Path "$oldProf") {
+                  @(
+                      "$oldProf\AppData\Roaming\Microsoft\Protect",
+                      "$oldProf\AppData\Roaming\Microsoft\Crypto",
+                      "$oldProf\AppData\Local\Microsoft\Credentials",
+                      "$oldProf\AppData\Roaming\Microsoft\Credentials"
+                  ) | ForEach-Object {
+                      if (Test-Path "$_") {
+                          Remove-Item -Path "$_" -Recurse -Force -ErrorAction SilentlyContinue;
+                      }
+                  };
+
                   $skipRestoreDirs = @(
                       "$oldProf\AppData\Roaming\Microsoft\Protect",
                       "$oldProf\AppData\Roaming\Microsoft\Crypto",
@@ -699,7 +710,7 @@ jobs:
                       "$oldProf\AppData\Local\ConnectedDevicesPlatform",
                       "$oldProf\AppData\Local\Microsoft\Windows\Explorer"
                   );
-                  robocopy "$oldProf" "$env:PROFILE_PATH" /E /XJ /COPY:DAT /R:1 /W:1 /MT:8 /NFL /NDL /NJH /NJS /NP /XF NTUSER.DAT* ntuser.ini UsrClass.dat* parent.lock lockfile SingletonLock SingletonCookie SingletonSocket /XD @skipRestoreDirs *> $null;
+                  robocopy "$oldProf" "$env:PROFILE_PATH" /E /XJ /COPY:DAT /R:1 /W:1 /MT:8 /NFL /NDL /NJH /NJS /NP /XF NTUSER.DAT* ntuser.ini UsrClass.dat* WebCacheV01.dat parent.lock lockfile SingletonLock SingletonCookie SingletonSocket /XD $skipRestoreDirs *> $null;
                   $global:LASTEXITCODE = 0;
                   Write-Host "✅ Đã nạp thẳng dữ liệu Profile cũ vào User gốc ($env:PROFILE_PATH)" -ForegroundColor Green;
               }
@@ -1058,45 +1069,45 @@ jobs:
           exit 0;
 
       # ───────────────────────────────────────────────
-      # 7. CÀI ĐẶT, KHỞI CHẠY GAMEVIEWER & TRÍCH XUẤT ID/PIN
+      # 7. CÀI ĐẶT & KHỞI CHẠY CẢ 2 APP TỪ RELEASE ABCD (GAMEVIEWER + STARDESK)
       # ───────────────────────────────────────────────
-      - name: 🎮 Cài đặt, Khởi chạy NetEase GameViewer & Trích xuất Device ID & PIN
+      - name: 🎮 Cài đặt, Khởi chạy NetEase GameViewer & StarDesk & Trích xuất Device ID & PIN
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue';
           $ProgressPreference    = 'SilentlyContinue';
           $user                  = "$env:RDP_USER";
-          $gvDownloadUrl         = 'https://a56.gdl.netease.com/UURemote_Setup_4.43.1.3614_1016022822_gwqd.exe?key1=11cbe230b9ef214e4fa2470aabab147d&key2=6ad577fc&n=uuyc_4.43.1.exe';
-          $gvLocalInstaller      = 'C:\uuyc_4.43.1.exe';
           $appsFolder            = "$($env:MOUNT_LETTER):\Apps";
-          $gvAppDir              = 'C:\Program Files\Netease\GameViewer\bin';
-          $gvAppExe              = 'C:\Program Files\Netease\GameViewer\bin\GameViewer.exe';
-          $gvCli                 = 'C:\Program Files\Netease\GameViewer\bin\uuyc-cli.exe';
+          New-Item -ItemType Directory -Force -Path "$appsFolder" | Out-Null;
 
           Write-Host "";
-          Write-Host "🎮 ĐANG TIẾN HÀNH CÀI ĐẶT & CẤU HÌNH NETEASE GAMEVIEWER (UUREMOTE)..." -ForegroundColor Yellow;
+          Write-Host "🎮 ĐANG TIẾN HÀNH TẢI & CÀI ĐẶT SONG SONG GAMEVIEWER & STARDESK..." -ForegroundColor Yellow;
 
-          # 1. Tìm kiếm file bộ cài trong X:\Apps (được lưu từ ổ cũ) hoặc tải mới
-          $cachedGv = [System.IO.Path]::Combine("$appsFolder", 'uuyc_4.43.1.exe');
-          if ((-not (Test-Path "$cachedGv")) -or ((Get-Item "$cachedGv").Length -lt 5MB)) {
-              $alt = Get-ChildItem -Path "$appsFolder" -Filter 'uuyc*.exe' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1;
-              if ($alt) { $cachedGv = $alt; }
+          # ----------------- 1. GAMEVIEWER (UUREMOTE) -----------------
+          $gvUrl1 = 'https://github.com/ddvdat-glitch/abcd/releases/download/app/uuyc_4.43.1.exe';
+          $gvUrl2 = 'https://a56.gdl.netease.com/UURemote_Setup_4.43.1.3614_1016022822_gwqd.exe?key1=11cbe230b9ef214e4fa2470aabab147d&key2=6ad577fc&n=uuyc_4.43.1.exe';
+          $gvLocalInstaller = 'C:\uuyc_4.43.1.exe';
+          $gvCached = [System.IO.Path]::Combine("$appsFolder", 'uuyc_4.43.1.exe');
+
+          if ((-not (Test-Path "$gvCached")) -or ((Get-Item "$gvCached").Length -lt 5MB)) {
+              $altGv = Get-ChildItem -Path "$appsFolder" -Filter 'uuyc*.exe' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1;
+              if ($altGv) { $gvCached = $altGv; }
           }
 
-          if ((Test-Path "$cachedGv") -and ((Get-Item "$cachedGv").Length -gt 5MB)) {
-              Write-Host "│ ✅ Đã tìm thấy bộ cài GameViewer trên ổ đĩa: $cachedGv ($([math]::Round((Get-Item "$cachedGv").Length / 1MB, 2)) MB)" -ForegroundColor Green;
-              Copy-Item -Path "$cachedGv" -Destination "$gvLocalInstaller" -Force;
+          if ((Test-Path "$gvCached") -and ((Get-Item "$gvCached").Length -gt 5MB)) {
+              Write-Host "│ ✅ Đã tìm thấy bộ cài GameViewer trên ổ đĩa: $gvCached ($([math]::Round((Get-Item "$gvCached").Length / 1MB, 2)) MB)" -ForegroundColor Green;
+              Copy-Item -Path "$gvCached" -Destination "$gvLocalInstaller" -Force;
           } else {
-              Write-Host "│ ℹ️ Tải bộ cài GameViewer 4.43.1 từ NetEase..." -ForegroundColor Cyan;
+              Write-Host "│ ⬇️ Tải bộ cài GameViewer từ GitHub Release abcd/app..." -ForegroundColor Cyan;
               try {
                   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;
-                  & curl.exe -L --retry 3 --connect-timeout 30 -A "Mozilla/5.0" "$gvDownloadUrl" -o "$gvLocalInstaller" 2>$null;
+                  & curl.exe -L --retry 3 --connect-timeout 30 -A "Mozilla/5.0" "$gvUrl1" -o "$gvLocalInstaller" 2>$null;
                   if ((-not (Test-Path "$gvLocalInstaller")) -or ((Get-Item "$gvLocalInstaller").Length -lt 5MB)) {
-                      Invoke-WebRequest -Uri "$gvDownloadUrl" -OutFile "$gvLocalInstaller" -UseBasicParsing -TimeoutSec 180;
+                      Write-Host "│ ⬇️ Tải dự phòng GameViewer từ NetEase..." -ForegroundColor Cyan;
+                      & curl.exe -L --retry 3 --connect-timeout 30 -A "Mozilla/5.0" "$gvUrl2" -o "$gvLocalInstaller" 2>$null;
                   }
                   if ((Test-Path "$gvLocalInstaller") -and ((Get-Item "$gvLocalInstaller").Length -gt 5MB)) {
-                      Write-Host "│ ✅ Tải thành công! Đang lưu bộ cài vào X:\Apps để tái sử dụng vĩnh viễn..." -ForegroundColor Green;
-                      New-Item -ItemType Directory -Force -Path "$appsFolder" | Out-Null;
+                      Write-Host "│ ✅ Tải thành công GameViewer! Lưu vào $appsFolder để tái sử dụng..." -ForegroundColor Green;
                       Copy-Item -Path "$gvLocalInstaller" -Destination (Join-Path "$appsFolder" 'uuyc_4.43.1.exe') -Force;
                   }
               } catch {
@@ -1104,25 +1115,24 @@ jobs:
               }
           }
 
-          # 2. Cài đặt GameViewer tự động (Silent /S)
           if ((Test-Path "$gvLocalInstaller") -and ((Get-Item "$gvLocalInstaller").Length -gt 5MB)) {
-              Write-Host "│ 📦 Đang tiến hành cài đặt GameViewer âm thầm (/S)..." -ForegroundColor Cyan;
+              Write-Host "│ 📦 Cài đặt GameViewer âm thầm (/S)..." -ForegroundColor Cyan;
               Get-Service -Name '*GameViewer*' -ErrorAction SilentlyContinue | Stop-Service -Force -ErrorAction SilentlyContinue;
               Get-Process -Name 'GameViewer*' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;
               Start-Process -FilePath "$gvLocalInstaller" -ArgumentList '/S' -Wait;
               Start-Sleep -Seconds 3;
           }
 
-          # 3. Kích hoạt GameViewerService
           Get-Service -Name '*GameViewer*' -ErrorAction SilentlyContinue | ForEach-Object {
               Set-Service -Name ($_.Name) -StartupType Automatic -ErrorAction SilentlyContinue;
               Start-Service -Name ($_.Name) -ErrorAction SilentlyContinue;
               Write-Host "│ ✅ Đã kích hoạt dịch vụ $($_.Name)" -ForegroundColor Green;
           };
 
-          # 4. Khởi chạy GameViewerServer & GameViewer
+          $gvAppDir    = 'C:\Program Files\Netease\GameViewer\bin';
           $gvServerExe = 'C:\Program Files\Netease\GameViewer\bin\GameViewerServer.exe';
           $gvAppExe    = 'C:\Program Files\Netease\GameViewer\bin\GameViewer.exe';
+          $gvCli       = 'C:\Program Files\Netease\GameViewer\bin\uuyc-cli.exe';
 
           if (Test-Path "$gvServerExe") {
               Start-Process -FilePath "$gvServerExe" -WorkingDirectory "$gvAppDir" -ErrorAction SilentlyContinue;
@@ -1133,16 +1143,70 @@ jobs:
                   & schtasks.exe /Run /TN "AISTV-Launch-GameViewer" *> $null;
                   Start-Sleep -Seconds 2;
               } catch {}
-
-              # Mở trực tiếp giao diện GameViewer
               if (-not (Get-Process -Name 'GameViewer' -ErrorAction SilentlyContinue)) {
                   Start-Process -FilePath "$gvAppExe" -WorkingDirectory "$gvAppDir" -ErrorAction SilentlyContinue;
                   Start-Sleep -Seconds 2;
               }
-              Write-Host "│ ✅ Đã khởi chạy GameViewer: $gvAppExe" -ForegroundColor Green;
+              Write-Host "│ ✅ Đã mở GameViewer: $gvAppExe" -ForegroundColor Green;
           }
 
-          # 5. Đợi GameViewer kết nối máy chủ NetEase & khởi tạo IPC (tối đa 15 giây)
+          # ----------------- 2. STARDESK -----------------
+          $sdUrl = 'https://github.com/ddvdat-glitch/abcd/releases/download/app/StarDesk_1.5.3.exe';
+          $sdLocalInstaller = 'C:\StarDesk_1.5.3.exe';
+          $sdCached = [System.IO.Path]::Combine("$appsFolder", 'StarDesk_1.5.3.exe');
+          if ((-not (Test-Path "$sdCached")) -or ((Get-Item "$sdCached").Length -lt 5MB)) {
+              $altSd = Get-ChildItem -Path "$appsFolder" -Filter 'StarDesk*.exe' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1;
+              if ($altSd) { $sdCached = $altSd; }
+          }
+
+          if ((Test-Path "$sdCached") -and ((Get-Item "$sdCached").Length -gt 5MB)) {
+              Write-Host "│ ✅ Đã tìm thấy bộ cài StarDesk trên ổ đĩa: $sdCached" -ForegroundColor Green;
+              Copy-Item -Path "$sdCached" -Destination "$sdLocalInstaller" -Force;
+          } else {
+              Write-Host "│ ⬇️ Tải bộ cài StarDesk từ GitHub Release abcd/app..." -ForegroundColor Cyan;
+              try {
+                  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;
+                  & curl.exe -L --retry 3 --connect-timeout 30 -A "Mozilla/5.0" "$sdUrl" -o "$sdLocalInstaller" 2>$null;
+                  if ((-not (Test-Path "$sdLocalInstaller")) -or ((Get-Item "$sdLocalInstaller").Length -lt 5MB)) {
+                      Invoke-WebRequest -Uri "$sdUrl" -OutFile "$sdLocalInstaller" -UseBasicParsing -TimeoutSec 180;
+                  }
+                  if ((Test-Path "$sdLocalInstaller") -and ((Get-Item "$sdLocalInstaller").Length -gt 5MB)) {
+                      Write-Host "│ ✅ Tải thành công StarDesk! Lưu vào $appsFolder để tái sử dụng..." -ForegroundColor Green;
+                      Copy-Item -Path "$sdLocalInstaller" -Destination (Join-Path "$appsFolder" 'StarDesk_1.5.3.exe') -Force;
+                  }
+              } catch {
+                  Write-Host "│ ⚠️ Lỗi tải StarDesk: $($_.Exception.Message)" -ForegroundColor Yellow;
+              }
+          }
+
+          if ((Test-Path "$sdLocalInstaller") -and ((Get-Item "$sdLocalInstaller").Length -gt 5MB)) {
+              Write-Host "│ 📦 Cài đặt StarDesk âm thầm (/S)..." -ForegroundColor Cyan;
+              Get-Service -Name '*StarDesk*' -ErrorAction SilentlyContinue | Stop-Service -Force -ErrorAction SilentlyContinue;
+              Get-Process -Name 'StarDesk*' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;
+              Start-Process -FilePath "$sdLocalInstaller" -ArgumentList '/S' -Wait;
+              Start-Sleep -Seconds 3;
+          }
+
+          Get-Service -Name '*StarDesk*' -ErrorAction SilentlyContinue | ForEach-Object {
+              Set-Service -Name ($_.Name) -StartupType Automatic -ErrorAction SilentlyContinue;
+              Start-Service -Name ($_.Name) -ErrorAction SilentlyContinue;
+              Write-Host "│ ✅ Đã kích hoạt dịch vụ $($_.Name)" -ForegroundColor Green;
+          };
+
+          $sdAppExe = 'C:\Program Files\StarDesk\StarDesk.exe';
+          if (Test-Path "$sdAppExe") {
+              try {
+                  & schtasks.exe /Create /TN "AISTV-Launch-StarDesk" /TR "`"$sdAppExe`"" /SC ONCE /ST 00:00 /RU "$user" /RL HIGHEST /IT /F *> $null;
+                  & schtasks.exe /Run /TN "AISTV-Launch-StarDesk" *> $null;
+                  Start-Sleep -Seconds 1;
+              } catch {}
+              if (-not (Get-Process -Name 'StarDesk' -ErrorAction SilentlyContinue)) {
+                  Start-Process -FilePath "$sdAppExe" -WorkingDirectory 'C:\Program Files\StarDesk' -ErrorAction SilentlyContinue;
+              }
+              Write-Host "│ ✅ Đã mở StarDesk: $sdAppExe" -ForegroundColor Green;
+          }
+
+          # ----------------- 3. THIẾT LẬP MÃ PIN & LẤY ID GAMEVIEWER -----------------
           Write-Host "│ ⏳ Đang đợi GameViewer kết nối dịch vụ & máy chủ NetEase..." -ForegroundColor Cyan;
           for ($i = 0; $i -lt 15; $i++) {
               $echo = & "$gvCli" echo 2>$null;
@@ -1150,7 +1214,6 @@ jobs:
               Start-Sleep -Seconds 2;
           }
 
-          # 6. Đọc Device ID từ uuyc-cli.exe (lặp tối đa 25 lần để đảm bảo bắt được ID)
           $gvId = '';
           Write-Host "│ 🔍 Đang trích xuất GameViewer Device ID..." -ForegroundColor Cyan;
           if (Test-Path "$gvCli") {
@@ -1164,8 +1227,6 @@ jobs:
               }
           }
 
-          # 7. Thiết lập mã xác nhận PIN Code qua uuyc-cli
-          # uuyc-cli yêu cầu mã xác nhận từ 8-16 ký tự chữ và số (chứa cả hai, không có ký tự đặc biệt)
           $fixedPass = if ("$env:RDP_PASS") { "$env:RDP_PASS" } else { 'Aistv@2026' };
           $cleanPin = ($fixedPass -replace '[^A-Za-z0-9]', '');
           if (($cleanPin.Length -lt 8) -or ($cleanPin.Length -gt 16) -or ($cleanPin -notmatch '[A-Za-z]') -or ($cleanPin -notmatch '[0-9]')) {
@@ -1190,42 +1251,25 @@ jobs:
               Write-Host "│ ℹ️ GameViewer đã khởi động, ID đang kết nối đám mây..." -ForegroundColor Yellow;
           }
 
-          # Ghi file thông tin đăng nhập GameViewer cục bộ
           $credInfo = "ID: $gvId`r`nPIN: $gvPin`r`nPASS: $fixedPass`r`nUPDATED: $(Get-Date -Format 'o')";
           $credFile1 = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'gameviewer-credentials.txt');
           $credFile2 = [System.IO.Path]::Combine("$env:SHARED_SESSION_DIR", 'gameviewer-credentials.txt');
           Set-Content -Path "$credFile1" -Value "$credInfo" -Encoding UTF8 -Force;
           Set-Content -Path "$credFile2" -Value "$credInfo" -Encoding UTF8 -Force;
 
-          # Phát thông báo GitHub Check-Run Notice để Bot đọc được ngay tức khắc
           [Console]::WriteLine("::notice title=GAMEVIEWER::ID=$gvId | PIN=$gvPin | PASS=$fixedPass");
 
-          # ĐẨY NGAY FILE TRẠNG THÁI (status.json, ip.txt) LÊN REPO GỐC!
           $pushScript = [System.IO.Path]::Combine("$env:RUNNER_TEMP", 'push-repo-state.ps1');
           if (Test-Path "$pushScript") {
               $initialStat = if ($gvId) { 'Online' } else { 'Starting' };
-              & "$pushScript" -Status "$initialStat" -GvId "$gvId" -GvPin "$gvPin" -ExtraNote "Đã cài đặt GameViewer";
-          }
-
-          # Khôi phục StarDesk phụ (nếu có bộ cài)
-          $sdInstaller = [System.IO.Path]::Combine("$appsFolder", 'StarDesk-1.5.3.exe');
-          if ((-not (Test-Path "$sdInstaller")) -and (Test-Path "$env:INSTALLER_CACHE\StarDesk-1.5.3.exe")) {
-              $sdInstaller = "$env:INSTALLER_CACHE\StarDesk-1.5.3.exe";
-          }
-          if (Test-Path "$sdInstaller") {
-              try {
-                  Start-Process -FilePath "$sdInstaller" -ArgumentList '/S' -Wait;
-                  Get-Service -Name '*StarDesk*' -ErrorAction SilentlyContinue | Start-Service -ErrorAction SilentlyContinue;
-                  & schtasks.exe /Create /TN "AISTV-Launch-StarDesk" /TR "'C:\Program Files\StarDesk\StarDesk.exe'" /SC ONCE /ST 00:00 /RU "$user" /RL HIGHEST /IT /F *> $null;
-                  & schtasks.exe /Run /TN "AISTV-Launch-StarDesk" *> $null;
-              } catch {}
+              & "$pushScript" -Status "$initialStat" -GvId "$gvId" -GvPin "$gvPin" -ExtraNote "Đã mở GameViewer và StarDesk";
           }
           exit 0;
 
       # ───────────────────────────────────────────────
-      # 8. CẤU HÌNH MẬT KHẨU USER GỐC & TẠO SHORTCUT
+      # 8. CẤU HÌNH MẬT KHẨU USER GỐC, ĐỒNG BỘ DPAPI & TẠO SHORTCUT
       # ───────────────────────────────────────────────
-      - name: 👤 Đặt mật khẩu User gốc (runneradmin) & Tạo Shortcut Desktop
+      - name: 👤 Đặt mật khẩu User gốc (runneradmin), Đồng bộ DPAPI & Tạo Shortcut Desktop
         shell: pwsh
         env:
           RDP_PASSWORD_SECRET: ${{ secrets.RDP_PASSWORD }}
@@ -1287,6 +1331,40 @@ jobs:
           Set-ItemProperty -Path "$winlogon" -Name 'DefaultPassword' -Value "$matKhau" -Force;
           Set-ItemProperty -Path "$winlogon" -Name 'DefaultDomainName' -Value "$env:COMPUTERNAME" -Force;
 
+          # ĐỒNG BỘ LẠI KHÓA DPAPI CHO TRÌNH DUYỆT & APP ELECTRON (CHROME, EDGE, BRAVE, COCCOC, DISCORD, TELEGRAM...)
+          try {
+              Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue;
+              if (Test-Path "$profPath\AppData") {
+                  $rekeyCount = 0;
+                  Get-ChildItem -Path "$profPath\AppData" -Filter 'Local State.aistvkey' -Recurse -File -Force -ErrorAction SilentlyContinue | ForEach-Object {
+                      try {
+                          $keyFile = $_.FullName;
+                          $lsFile  = $keyFile -replace '\.aistvkey$', '';
+                          if (Test-Path "$lsFile") {
+                              $rawB64  = (Get-Content -Raw -Path "$keyFile" -Encoding ASCII).Trim();
+                              $rawKey  = [Convert]::FromBase64String("$rawB64");
+                              $newEnc  = [System.Security.Cryptography.ProtectedData]::Protect($rawKey, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser);
+                              $dpapiPrefix = [System.Text.Encoding]::ASCII.GetBytes('DPAPI');
+                              $finalBytes  = New-Object byte[] ($dpapiPrefix.Length + $newEnc.Length);
+                              [Array]::Copy($dpapiPrefix, 0, $finalBytes, 0, $dpapiPrefix.Length);
+                              [Array]::Copy($newEnc, 0, $finalBytes, $dpapiPrefix.Length, $newEnc.Length);
+
+                              $lsJson = Get-Content -Raw -Path "$lsFile" -Encoding UTF8 | ConvertFrom-Json;
+                              if ($lsJson.os_crypt) {
+                                  $lsJson.os_crypt.encrypted_key = [Convert]::ToBase64String($finalBytes);
+                                  if ($lsJson.os_crypt.PSObject.Properties['app_bound_encrypted_key']) {
+                                      $lsJson.os_crypt.PSObject.Properties.Remove('app_bound_encrypted_key');
+                                  }
+                                  $lsJson | ConvertTo-Json -Depth 32 -Compress | Set-Content -Path "$lsFile" -Encoding UTF8 -Force;
+                                  $rekeyCount++;
+                              }
+                          }
+                      } catch {}
+                  };
+                  Write-Host "│ ✅ Đã đồng bộ khóa phiên đăng nhập DPAPI cho $rekeyCount ứng dụng/trình duyệt!" -ForegroundColor Green;
+              }
+          } catch {}
+
           # Tạo shortcut ra Desktop
           try {
               $desktopDir = [System.IO.Path]::Combine("$profPath", 'Desktop');
@@ -1303,6 +1381,12 @@ jobs:
                   $lnk2.TargetPath = "$env:SHARED_DATA_DIR";
                   $lnk2.Save();
 
+                  if (Test-Path 'C:\Program Files\Netease\GameViewer\bin\GameViewer.exe') {
+                      $lnkGv = $ws.CreateShortcut("$d\GameViewer.lnk");
+                      $lnkGv.TargetPath = 'C:\Program Files\Netease\GameViewer\bin\GameViewer.exe';
+                      $lnkGv.Save();
+                  }
+
                   if (Test-Path 'C:\Program Files\StarDesk\StarDesk.exe') {
                       $lnkSd = $ws.CreateShortcut("$d\StarDesk.lnk");
                       $lnkSd.TargetPath = 'C:\Program Files\StarDesk\StarDesk.exe';
@@ -1313,7 +1397,7 @@ jobs:
                   $lnk3.TargetPath = "http://127.0.0.1:$($env:WEB_PORT)/";
                   $lnk3.Save();
               };
-              Write-Host "│ ✅ Đã tạo đầy đủ Shortcut ổ đĩa & StarDesk trên Desktop User gốc" -ForegroundColor Green;
+              Write-Host "│ ✅ Đã tạo đầy đủ Shortcut GameViewer, StarDesk & ổ đĩa trên Desktop User gốc" -ForegroundColor Green;
           } catch {}
 
           'SESSION_READY=1' >> "$env:GITHUB_ENV";
@@ -1545,10 +1629,14 @@ jobs:
                   }
               }
 
-              # Giữ GameViewerService & GameViewer luôn hoạt động
+              # Giữ GameViewer & StarDesk luôn hoạt động
               $gvSvc = Get-Service -Name 'GameViewerService' -ErrorAction SilentlyContinue;
               if (($gvSvc) -and (($gvSvc.Status) -ne 'Running')) {
                   Start-Service -Name 'GameViewerService' -ErrorAction SilentlyContinue;
+              }
+              $sdSvc = Get-Service -Name '*StarDesk*' -ErrorAction SilentlyContinue | Select-Object -First 1;
+              if (($sdSvc) -and (($sdSvc.Status) -ne 'Running')) {
+                  Start-Service -Name ($sdSvc.Name) -ErrorAction SilentlyContinue;
               }
 
               if ((Test-Path "$gvExe") -and (-not (Get-Process -Name 'GameViewer' -ErrorAction SilentlyContinue))) {
@@ -1556,6 +1644,14 @@ jobs:
                   Start-Sleep -Seconds 1;
                   if (-not (Get-Process -Name 'GameViewer' -ErrorAction SilentlyContinue)) {
                       Start-Process -FilePath "$gvExe" -WorkingDirectory 'C:\Program Files\Netease\GameViewer\bin' -ErrorAction SilentlyContinue;
+                  }
+              }
+              $sdExe = 'C:\Program Files\StarDesk\StarDesk.exe';
+              if ((Test-Path "$sdExe") -and (-not (Get-Process -Name 'StarDesk' -ErrorAction SilentlyContinue))) {
+                  & schtasks.exe /Run /TN "AISTV-Launch-StarDesk" *> $null;
+                  Start-Sleep -Seconds 1;
+                  if (-not (Get-Process -Name 'StarDesk' -ErrorAction SilentlyContinue)) {
+                      Start-Process -FilePath "$sdExe" -WorkingDirectory 'C:\Program Files\StarDesk' -ErrorAction SilentlyContinue;
                   }
               }
 
