@@ -76,8 +76,8 @@ permissions:
   actions: write
 
 concurrency:
-  group: rdp-stardesk-${{ inputs.machine_id || 'may-phu-1' }}
-  cancel-in-progress: false
+  group: stardesk-${{ inputs.machine_id || 'may-phu-1' }}
+  cancel-in-progress: true
 
 jobs:
   Premium-RDP-Setup:
