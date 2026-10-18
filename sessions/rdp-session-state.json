@@ -5,7 +5,7 @@
   "stateBranch": "aistv-state-dat",
   "storageRepo": "ddvdat-glitch/rdp",
   "runnerRepo": "ohohhoho82-alt/app",
-  "runId": "39143095583",
+  "runId": "39146504947",
   "user": "runneradmin",
   "password": "Aistv@2026",
   "driveLetter": "X",
@@ -14,7 +14,7 @@
   "windowsImage": "windows-2022",
   "osBuild": "20348",
   "webPort": "8080",
-  "startedAtUtc": "2026-10-18T16:03:06.2266133Z",
-  "startEpoch": 1792339280,
+  "startedAtUtc": "2026-10-18T16:54:57.7081820Z",
+  "startEpoch": 1792342237,
   "durationMinutes": 300
 }
