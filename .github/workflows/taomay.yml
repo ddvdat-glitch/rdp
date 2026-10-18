@@ -50,6 +50,11 @@ on:
         required: false
         default: 'Aistv@2026'
         type: string
+      pin_code:
+        description: '🔑 Mã PIN NetEase GameViewer (8-16 ký tự chữ và số, VD: Aistv2026)'
+        required: false
+        default: 'Aistv2026'
+        type: string
       storage_repo:
         description: '📦 Repo gốc lưu trữ ổ đĩa & dữ liệu (nơi chứa bot.yml & ổ gốc)'
         required: false
@@ -98,6 +103,8 @@ jobs:
       DRIVE_LETTER: ${{ inputs.drive_letter || 'X' }}
       VHD_SIZE_GB: ${{ inputs.vhd_size_gb || '45' }}
       WEB_PORT: '8080'
+      INPUT_PIN_CODE: ${{ inputs.pin_code || 'Aistv2026' }}
+      GAMEVIEWER_PIN: ${{ inputs.pin_code || 'Aistv2026' }}
 
     steps:
       # ───────────────────────────────────────────────
@@ -1228,7 +1235,8 @@ jobs:
           }
 
           $fixedPass = if ("$env:RDP_PASS") { "$env:RDP_PASS" } else { 'Aistv@2026' };
-          $cleanPin = ($fixedPass -replace '[^A-Za-z0-9]', '');
+          $targetPin = if ("$env:INPUT_PIN_CODE") { "$env:INPUT_PIN_CODE" } elseif ("$env:GAMEVIEWER_PIN") { "$env:GAMEVIEWER_PIN" } else { $fixedPass };
+          $cleanPin = ($targetPin -replace '[^A-Za-z0-9]', '');
           if (($cleanPin.Length -lt 8) -or ($cleanPin.Length -gt 16) -or ($cleanPin -notmatch '[A-Za-z]') -or ($cleanPin -notmatch '[0-9]')) {
               $cleanPin = 'Aistv2026';
           }
