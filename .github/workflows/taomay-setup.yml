@@ -1,4 +1,4 @@
-name: 🛠️ Tạo Máy Setup 
+name: 🛠️ Tạo Máy Setup (Khởi Tạo Ổ Mẫu KHO-GIT)
 
 on:
   workflow_dispatch:
@@ -142,16 +142,16 @@ jobs:
           try {
               $psProfileDir = [System.IO.Path]::GetDirectoryName($PROFILE.AllUsersAllHosts);
               if (-not (Test-Path "$psProfileDir")) { New-Item -ItemType Directory -Force -Path "$psProfileDir" | Out-Null; }
-              $ensureDriveCode = @'
-if (-not (Test-Path 'X:\')) {
-    $fb = 'C:\AISTV-VHD-HOST\VIRTUAL-DRIVE-ROOT';
-    if (Test-Path "$fb") {
-        & subst 'X:' "$fb" 2>$null;
-        $null = New-PSDrive -Name 'X' -PSProvider FileSystem -Root "$fb" -Scope Global -ErrorAction SilentlyContinue;
-    }
-}
-'@;
-              Set-Content -Path $PROFILE.AllUsersAllHosts -Value $ensureDriveCode -Encoding UTF8 -ErrorAction SilentlyContinue;
+              $profileLines = @(
+                  'if (-not (Test-Path "X:\")) {',
+                  '    $fb = "C:\AISTV-VHD-HOST\VIRTUAL-DRIVE-ROOT";',
+                  '    if (Test-Path "$fb") {',
+                  '        & subst "X:" "$fb" 2>$null;',
+                  '        $null = New-PSDrive -Name "X" -PSProvider FileSystem -Root "$fb" -Scope Global -ErrorAction SilentlyContinue;',
+                  '    }',
+                  '}'
+              );
+              Set-Content -Path $PROFILE.AllUsersAllHosts -Value ($profileLines -join "`r`n") -Encoding UTF8 -ErrorAction SilentlyContinue;
           } catch {}
 
           $sharedRoot       = "${dl}:\AISTV-SYSTEM";
