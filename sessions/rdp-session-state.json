@@ -1,0 +1,20 @@
+{
+  "machineId": "tuandz",
+  "displayName": "Máy TUANDZ",
+  "releaseTag": "aistv-storage-tuandz",
+  "stateBranch": "aistv-state-tuandz",
+  "storageRepo": "ddvdat-glitch/rdp",
+  "runnerRepo": "ohohhoho82-alt/app",
+  "runId": "39202299721",
+  "user": "runneradmin",
+  "password": "Aistv2026",
+  "driveLetter": "X",
+  "sharedRoot": "X:\\AISTV-SYSTEM",
+  "stardeskId": "",
+  "windowsImage": "windows-2022",
+  "osBuild": "20348",
+  "webPort": "8080",
+  "startedAtUtc": "2026-10-19T05:08:06.0861938Z",
+  "startEpoch": 1792386243,
+  "durationMinutes": 300
+}
