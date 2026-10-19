@@ -1,19 +1,19 @@
 ===========================================================
-           THONG TIN MAY AO: Máy dat (dat)
+           THONG TIN MAY AO: Máy DAT (dat)
 ===========================================================
-Trang thai     : Stopped
-GameViewer ID  : 680319878
+Trang thai     : Online
+GameViewer ID  : 387100102
 Ma PIN (Code)  : dat7122008
-Mat khau may   : dat7122008
+Mat khau may   : Aistv@2026
 User Windows   : runneradmin
-Noi treo may   : ohohhoho82-alt/app (Run #39194758526)
+Noi treo may   : ohohhoho82-alt/app (Run #39200648119)
 Kho luu o dia  : ddvdat-glitch/rdp (aistv-storage-dat)
 Nhanh State    : aistv-state-dat
 Thoi luong     : 5 giờ 00 phút
-Cap nhat luc   : 2026-10-19 10:39:52 (Gio Viet Nam)
+Cap nhat luc   : 2026-10-19 11:42:51 (Gio Viet Nam)
 ===========================================================
 HUONG DAN KET NOI:
 1. Mo NetEase GameViewer tren may tinh hoac dien thoai
-2. Nhap GameViewer Device ID: 680319878
+2. Nhap GameViewer Device ID: 387100102
 3. Nhap PIN Code: dat7122008 de ket noi dieu khien
 ===========================================================
