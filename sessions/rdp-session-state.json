@@ -1,0 +1,20 @@
+{
+  "machineId": "dangcapbakhi",
+  "displayName": "Máy DANGCAPBAKHI",
+  "releaseTag": "aistv-storage-dangcapbakhi",
+  "stateBranch": "aistv-state-dangcapbakhi",
+  "storageRepo": "ddvdat-glitch/rdp",
+  "runnerRepo": "ohohhoho82-alt/app",
+  "runId": "39205286435",
+  "user": "runneradmin",
+  "password": "acb12345",
+  "driveLetter": "X",
+  "sharedRoot": "X:\\AISTV-SYSTEM",
+  "stardeskId": "",
+  "windowsImage": "windows-2022",
+  "osBuild": "20348",
+  "webPort": "8080",
+  "startedAtUtc": "2026-10-19T05:37:24.8936790Z",
+  "startEpoch": 1792388093,
+  "durationMinutes": 300
+}
