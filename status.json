@@ -1,0 +1,21 @@
+{
+  "machineId": "maycuat",
+  "displayName": "Máy MAYCUAT",
+  "ownerId": "1555829146159161465",
+  "owner": "tu5m",
+  "status": "Online",
+  "isOnline": true,
+  "deviceId": "368583412",
+  "gvId": "368583412",
+  "pin": "Aistv2026",
+  "gvPin": "Aistv2026",
+  "pass": "Aistv@2026",
+  "user": "runneradmin",
+  "runnerRepo": "ohohhoho82-alt/app",
+  "storageRepo": "ddvdat-glitch/rdp",
+  "runId": "39217514213",
+  "updatedUtc": "2026-10-19T07:43:12.1825411Z",
+  "updatedVn": "2026-10-19 14:43:12 (UTC+7)",
+  "durationMinutes": 300,
+  "note": "Đã mở GameViewer và StarDesk"
+}
