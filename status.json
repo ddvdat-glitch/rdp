@@ -1,0 +1,21 @@
+{
+  "machineId": "test123",
+  "displayName": "Máy TEST123",
+  "ownerId": "946662197168341053",
+  "owner": "chi ki ka wa",
+  "status": "Online",
+  "isOnline": true,
+  "deviceId": "950890345",
+  "gvId": "950890345",
+  "pin": "dat7122008",
+  "gvPin": "dat7122008",
+  "pass": "Aistv@2026",
+  "user": "runneradmin",
+  "runnerRepo": "ohohhoho82-alt/app",
+  "storageRepo": "ddvdat-glitch/rdp",
+  "runId": "39205377129",
+  "updatedUtc": "2026-10-19T05:38:07.6388833Z",
+  "updatedVn": "2026-10-19 12:38:07 (UTC+7)",
+  "durationMinutes": 300,
+  "note": "Đã mở GameViewer và StarDesk"
+}
