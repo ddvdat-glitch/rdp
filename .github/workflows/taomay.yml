@@ -1495,22 +1495,6 @@ public class ResControl {
                   $lnk1.TargetPath = "$($env:MOUNT_LETTER):\";
                   $lnk1.Save();
 
-                  $lnk2 = $ws.CreateShortcut("$d\AISTV-SHARED.lnk");
-                  $lnk2.TargetPath = "$env:SHARED_DATA_DIR";
-                  $lnk2.Save();
-
-                  if (Test-Path 'C:\Program Files\Netease\GameViewer\bin\GameViewer.exe') {
-                      $lnkGv = $ws.CreateShortcut("$d\GameViewer.lnk");
-                      $lnkGv.TargetPath = 'C:\Program Files\Netease\GameViewer\bin\GameViewer.exe';
-                      $lnkGv.Save();
-                  }
-
-                  if (Test-Path 'C:\Program Files\StarDesk\StarDesk.exe') {
-                      $lnkSd = $ws.CreateShortcut("$d\StarDesk.lnk");
-                      $lnkSd.TargetPath = 'C:\Program Files\StarDesk\StarDesk.exe';
-                      $lnkSd.Save();
-                  }
-
                   $lnk3 = $ws.CreateShortcut("$d\WEB-QUAN-LY-RDP.url");
                   $lnk3.TargetPath = "http://127.0.0.1:$($env:WEB_PORT)/";
                   $lnk3.Save();
@@ -1526,7 +1510,6 @@ public class ResControl {
           'SESSION_READY=1' >> "$env:GITHUB_ENV";
           Write-Host "✅ User gốc [$user] ($profPath) đã sẵn sàng!" -ForegroundColor Green;
           exit 0;
-
       # ───────────────────────────────────────────────
       # 9. KHỞI CHẠY WEB PANEL QUẢN LÝ (PORT 8080) & GHI STATE
       # ───────────────────────────────────────────────
