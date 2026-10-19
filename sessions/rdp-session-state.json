@@ -1,0 +1,20 @@
+{
+  "machineId": "maycuatuan",
+  "displayName": "Máy MAYCUATUAN",
+  "releaseTag": "aistv-storage-maycuatuan",
+  "stateBranch": "aistv-state-maycuatuan",
+  "storageRepo": "ddvdat-glitch/rdp",
+  "runnerRepo": "ohohhoho82-alt/app",
+  "runId": "39207746835",
+  "user": "runneradmin",
+  "password": "abcd123456",
+  "driveLetter": "X",
+  "sharedRoot": "X:\\AISTV-SYSTEM",
+  "stardeskId": "",
+  "windowsImage": "windows-2022",
+  "osBuild": "20348",
+  "webPort": "8080",
+  "startedAtUtc": "2026-10-19T06:09:40.9750450Z",
+  "startEpoch": 1792389830,
+  "durationMinutes": 300
+}
