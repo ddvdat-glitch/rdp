@@ -1,19 +1,19 @@
 {
   "machineId": "may-virus",
   "displayName": "Máy MAY-VIRUS",
-  "status": "Online",
-  "isOnline": true,
+  "status": "Stopped",
+  "isOnline": false,
   "deviceId": "248439588",
   "gvId": "248439588",
   "pin": "Aistv2026",
   "gvPin": "Aistv2026",
-  "pass": "Aistv@2026",
+  "pass": "Taidz123",
   "user": "runneradmin",
   "runnerRepo": "ohohhoho82-alt/app",
   "storageRepo": "ddvdat-glitch/rdp",
   "runId": "39202426589",
-  "updatedUtc": "2026-10-19T05:08:51.4124729Z",
-  "updatedVn": "2026-10-19 12:08:51 (UTC+7)",
+  "updatedUtc": "2026-10-19T05:13:39.5680083Z",
+  "updatedVn": "2026-10-19 12:13:39 (UTC+7)",
   "durationMinutes": 300,
-  "note": "Đã mở GameViewer và StarDesk"
+  "note": "Máy đã tắt phiên làm việc"
 }
