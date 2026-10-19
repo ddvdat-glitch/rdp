@@ -1,0 +1,20 @@
+{
+  "machineId": "ohbro",
+  "displayName": "Máy OHBRO",
+  "releaseTag": "aistv-storage-ohbro",
+  "stateBranch": "aistv-state-ohbro",
+  "storageRepo": "ddvdat-glitch/rdp",
+  "runnerRepo": "ohohhoho82-alt/app",
+  "runId": "39203050344",
+  "user": "runneradmin",
+  "password": "abcde123",
+  "driveLetter": "X",
+  "sharedRoot": "X:\\AISTV-SYSTEM",
+  "stardeskId": "",
+  "windowsImage": "windows-2022",
+  "osBuild": "20348",
+  "webPort": "8080",
+  "startedAtUtc": "2026-10-19T05:11:22.5323918Z",
+  "startEpoch": 1792386557,
+  "durationMinutes": 300
+}
