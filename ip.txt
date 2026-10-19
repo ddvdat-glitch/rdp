@@ -1,16 +1,16 @@
 ===========================================================
            THONG TIN MAY AO: Máy STARTDESKCHINA (startdeskchina)
 ===========================================================
-Trang thai     : Online
+Trang thai     : Stopped
 GameViewer ID  : 923605670
 Ma PIN (Code)  : Aistv2026
-Mat khau may   : Aistv@2026
+Mat khau may   : aihoiabc
 User Windows   : runneradmin
 Noi treo may   : ohohhoho82-alt/app (Run #39227707768)
 Kho luu o dia  : ddvdat-glitch/rdp (aistv-storage-startdeskchina)
 Nhanh State    : aistv-state-startdeskchina
 Thoi luong     : 5 giờ 00 phút
-Cap nhat luc   : 2026-10-19 16:09:54 (Gio Viet Nam)
+Cap nhat luc   : 2026-10-19 16:13:56 (Gio Viet Nam)
 ===========================================================
 HUONG DAN KET NOI:
 1. Mo NetEase GameViewer tren may tinh hoac dien thoai
