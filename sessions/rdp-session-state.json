@@ -1,11 +1,11 @@
 {
   "machineId": "dat",
-  "displayName": "Máy dat",
+  "displayName": "Máy DAT",
   "releaseTag": "aistv-storage-dat",
   "stateBranch": "aistv-state-dat",
   "storageRepo": "ddvdat-glitch/rdp",
   "runnerRepo": "ohohhoho82-alt/app",
-  "runId": "39194758526",
+  "runId": "39200648119",
   "user": "runneradmin",
   "password": "dat7122008",
   "driveLetter": "X",
@@ -14,7 +14,7 @@
   "windowsImage": "windows-2022",
   "osBuild": "20348",
   "webPort": "8080",
-  "startedAtUtc": "2026-10-19T03:33:02.6467286Z",
-  "startEpoch": 1792380441,
+  "startedAtUtc": "2026-10-19T04:43:00.1939725Z",
+  "startEpoch": 1792384833,
   "durationMinutes": 300
 }
