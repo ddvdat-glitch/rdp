@@ -1,19 +1,19 @@
 ===========================================================
            THONG TIN MAY AO: Máy MAY-VIRUS-2 (may-virus-2)
 ===========================================================
-Trang thai     : Stopped
-GameViewer ID  : 
+Trang thai     : Online
+GameViewer ID  : 948318107
 Ma PIN (Code)  : Aistv2026
 Mat khau may   : Aistv@2026
 User Windows   : runneradmin
-Noi treo may   : ohohhoho82-alt/app (Run #39202723343)
+Noi treo may   : ohohhoho82-alt/app (Run #39206325922)
 Kho luu o dia  : ddvdat-glitch/rdp (aistv-storage-may-virus-2)
 Nhanh State    : aistv-state-may-virus-2
 Thoi luong     : 5 giờ 00 phút
-Cap nhat luc   : 2026-10-19 12:13:31 (Gio Viet Nam)
+Cap nhat luc   : 2026-10-19 12:50:45 (Gio Viet Nam)
 ===========================================================
 HUONG DAN KET NOI:
 1. Mo NetEase GameViewer tren may tinh hoac dien thoai
-2. Nhap GameViewer Device ID: 
+2. Nhap GameViewer Device ID: 948318107
 3. Nhap PIN Code: Aistv2026 de ket noi dieu khien
 ===========================================================
