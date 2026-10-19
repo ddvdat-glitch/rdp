@@ -1,0 +1,19 @@
+{
+  "machineId": "may-virus",
+  "displayName": "Máy MAY-VIRUS",
+  "status": "Stopped",
+  "isOnline": false,
+  "deviceId": "",
+  "gvId": "",
+  "pin": "Taidz123",
+  "gvPin": "Taidz123",
+  "pass": "Aistv@2026",
+  "user": "runneradmin",
+  "runnerRepo": "ohohhoho82-alt/app",
+  "storageRepo": "ddvdat-glitch/rdp",
+  "runId": "39202347861",
+  "updatedUtc": "2026-10-19T05:02:11.7047554Z",
+  "updatedVn": "2026-10-19 12:02:11 (UTC+7)",
+  "durationMinutes": 300,
+  "note": "Máy đã tắt phiên làm việc"
+}
