@@ -1,0 +1,20 @@
+{
+  "machineId": "may-nghich",
+  "displayName": "Máy MAY-NGHICH",
+  "releaseTag": "aistv-storage-may-nghich",
+  "stateBranch": "aistv-state-may-nghich",
+  "storageRepo": "ddvdat-glitch/rdp",
+  "runnerRepo": "ohohhoho82-alt/app",
+  "runId": "39213652799",
+  "user": "runneradmin",
+  "password": "Aistv2026",
+  "driveLetter": "X",
+  "sharedRoot": "X:\\AISTV-SYSTEM",
+  "stardeskId": "",
+  "windowsImage": "windows-2022",
+  "osBuild": "20348",
+  "webPort": "8080",
+  "startedAtUtc": "2026-10-19T07:06:50.2222913Z",
+  "startEpoch": 1792393474,
+  "durationMinutes": 300
+}
