@@ -1,0 +1,19 @@
+{
+  "machineId": "test",
+  "displayName": "Máy test",
+  "status": "Online",
+  "isOnline": true,
+  "deviceId": "221867043",
+  "gvId": "221867043",
+  "pin": "dat7122008",
+  "gvPin": "dat7122008",
+  "pass": "Aistv@2026",
+  "user": "runneradmin",
+  "runnerRepo": "ohohhoho82-alt/app",
+  "storageRepo": "ddvdat-glitch/rdp",
+  "runId": "39195857791",
+  "updatedUtc": "2026-10-19T03:42:45.4943774Z",
+  "updatedVn": "2026-10-19 10:42:45 (UTC+7)",
+  "durationMinutes": 300,
+  "note": "Đã mở GameViewer và StarDesk"
+}
