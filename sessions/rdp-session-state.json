@@ -1,0 +1,20 @@
+{
+  "machineId": "may-virus",
+  "displayName": "Máy MAY-VIRUS",
+  "releaseTag": "aistv-storage-may-virus",
+  "stateBranch": "aistv-state-may-virus",
+  "storageRepo": "ddvdat-glitch/rdp",
+  "runnerRepo": "ohohhoho82-alt/app",
+  "runId": "39202426589",
+  "user": "runneradmin",
+  "password": "Taidz123",
+  "driveLetter": "X",
+  "sharedRoot": "X:\\AISTV-SYSTEM",
+  "stardeskId": "",
+  "windowsImage": "windows-2022",
+  "osBuild": "20348",
+  "webPort": "8080",
+  "startedAtUtc": "2026-10-19T05:08:58.3021631Z",
+  "startEpoch": 1792386294,
+  "durationMinutes": 300
+}
