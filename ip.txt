@@ -1,0 +1,19 @@
+===========================================================
+           THONG TIN MAY AO: Máy TU5N (tu5n)
+===========================================================
+Trang thai     : Online
+GameViewer ID  : 922150481
+Ma PIN (Code)  : abc123456
+Mat khau may   : Aistv@2026
+User Windows   : runneradmin
+Noi treo may   : ohohhoho82-alt/app (Run #39202917706)
+Kho luu o dia  : ddvdat-glitch/rdp (aistv-storage-tu5n)
+Nhanh State    : aistv-state-tu5n
+Thoi luong     : 5 giờ 00 phút
+Cap nhat luc   : 2026-10-19 12:09:58 (Gio Viet Nam)
+===========================================================
+HUONG DAN KET NOI:
+1. Mo NetEase GameViewer tren may tinh hoac dien thoai
+2. Nhap GameViewer Device ID: 922150481
+3. Nhap PIN Code: abc123456 de ket noi dieu khien
+===========================================================

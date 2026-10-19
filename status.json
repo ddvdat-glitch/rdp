@@ -1,0 +1,19 @@
+{
+  "machineId": "tu5n",
+  "displayName": "Máy TU5N",
+  "status": "Online",
+  "isOnline": true,
+  "deviceId": "922150481",
+  "gvId": "922150481",
+  "pin": "abc123456",
+  "gvPin": "abc123456",
+  "pass": "Aistv@2026",
+  "user": "runneradmin",
+  "runnerRepo": "ohohhoho82-alt/app",
+  "storageRepo": "ddvdat-glitch/rdp",
+  "runId": "39202917706",
+  "updatedUtc": "2026-10-19T05:09:58.0742210Z",
+  "updatedVn": "2026-10-19 12:09:58 (UTC+7)",
+  "durationMinutes": 300,
+  "note": "Đã mở GameViewer và StarDesk"
+}
