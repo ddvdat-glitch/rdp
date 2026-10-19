@@ -1,0 +1,19 @@
+===========================================================
+           THONG TIN MAY AO: Máy MAYT2 (mayt2)
+===========================================================
+Trang thai     : Stopped
+GameViewer ID  : 785337509
+Ma PIN (Code)  : sieubakhi1234
+Mat khau may   : Aistv@2026
+User Windows   : runneradmin
+Noi treo may   : ohohhoho82-alt/app (Run #39207312886)
+Kho luu o dia  : ddvdat-glitch/rdp (aistv-storage-mayt2)
+Nhanh State    : aistv-state-mayt2
+Thoi luong     : 5 giờ 00 phút
+Cap nhat luc   : 2026-10-19 13:01:19 (Gio Viet Nam)
+===========================================================
+HUONG DAN KET NOI:
+1. Mo NetEase GameViewer tren may tinh hoac dien thoai
+2. Nhap GameViewer Device ID: 785337509
+3. Nhap PIN Code: sieubakhi1234 de ket noi dieu khien
+===========================================================

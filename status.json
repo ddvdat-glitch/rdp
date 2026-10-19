@@ -1,0 +1,21 @@
+{
+  "machineId": "mayt2",
+  "displayName": "Máy MAYT2",
+  "ownerId": "1555829146159161465",
+  "owner": "tu5m",
+  "status": "Stopped",
+  "isOnline": false,
+  "deviceId": "785337509",
+  "gvId": "785337509",
+  "pin": "sieubakhi1234",
+  "gvPin": "sieubakhi1234",
+  "pass": "Aistv@2026",
+  "user": "runneradmin",
+  "runnerRepo": "ohohhoho82-alt/app",
+  "storageRepo": "ddvdat-glitch/rdp",
+  "runId": "39207312886",
+  "updatedUtc": "2026-10-19T06:01:19.8676397Z",
+  "updatedVn": "2026-10-19 13:01:19 (UTC+7)",
+  "durationMinutes": 300,
+  "note": "Máy đã tắt phiên làm việc"
+}
