@@ -1,16 +1,16 @@
 ===========================================================
            THONG TIN MAY AO: Máy PITER (piter)
 ===========================================================
-Trang thai     : Online
+Trang thai     : Stopped
 GameViewer ID  : 455744442
 Ma PIN (Code)  : abc12345
-Mat khau may   : Aistv@2026
+Mat khau may   : abc12345
 User Windows   : runneradmin
 Noi treo may   : ohohhoho82-alt/app (Run #39201611616)
 Kho luu o dia  : ddvdat-glitch/rdp (aistv-storage-piter)
 Nhanh State    : aistv-state-piter
 Thoi luong     : 5 giờ 00 phút
-Cap nhat luc   : 2026-10-19 11:54:26 (Gio Viet Nam)
+Cap nhat luc   : 2026-10-19 12:03:12 (Gio Viet Nam)
 ===========================================================
 HUONG DAN KET NOI:
 1. Mo NetEase GameViewer tren may tinh hoac dien thoai
