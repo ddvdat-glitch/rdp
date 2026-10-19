@@ -1,0 +1,19 @@
+{
+  "machineId": "ohbro",
+  "displayName": "Máy OHBRO",
+  "status": "Online",
+  "isOnline": true,
+  "deviceId": "409668926",
+  "gvId": "409668926",
+  "pin": "abcde123",
+  "gvPin": "abcde123",
+  "pass": "Aistv@2026",
+  "user": "runneradmin",
+  "runnerRepo": "ohohhoho82-alt/app",
+  "storageRepo": "ddvdat-glitch/rdp",
+  "runId": "39203050344",
+  "updatedUtc": "2026-10-19T05:11:13.6878932Z",
+  "updatedVn": "2026-10-19 12:11:13 (UTC+7)",
+  "durationMinutes": 300,
+  "note": "Đã mở GameViewer và StarDesk"
+}
