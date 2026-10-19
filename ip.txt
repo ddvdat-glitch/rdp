@@ -10,7 +10,7 @@ Noi treo may   : ohohhoho82-alt/app (Run #39217514213)
 Kho luu o dia  : ddvdat-glitch/rdp (aistv-storage-maycuat)
 Nhanh State    : aistv-state-maycuat
 Thoi luong     : 5 giờ 00 phút
-Cap nhat luc   : 2026-10-19 15:13:30 (Gio Viet Nam)
+Cap nhat luc   : 2026-10-19 15:28:33 (Gio Viet Nam)
 ===========================================================
 HUONG DAN KET NOI:
 1. Mo NetEase GameViewer tren may tinh hoac dien thoai
