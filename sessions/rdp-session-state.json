@@ -1,0 +1,20 @@
+{
+  "machineId": "may-cua-vua",
+  "displayName": "Máy MAY-CUA-VUA",
+  "releaseTag": "aistv-storage-may-cua-vua",
+  "stateBranch": "aistv-state-may-cua-vua",
+  "storageRepo": "ddvdat-glitch/rdp",
+  "runnerRepo": "ohohhoho82-alt/app",
+  "runId": "39215510778",
+  "user": "runneradmin",
+  "password": "123456abc",
+  "driveLetter": "X",
+  "sharedRoot": "X:\\AISTV-SYSTEM",
+  "stardeskId": "",
+  "windowsImage": "windows-2022",
+  "osBuild": "20348",
+  "webPort": "8080",
+  "startedAtUtc": "2026-10-19T07:27:08.6571478Z",
+  "startEpoch": 1792394678,
+  "durationMinutes": 300
+}
