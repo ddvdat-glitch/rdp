@@ -1,0 +1,20 @@
+{
+  "machineId": "piter",
+  "displayName": "Máy PITER",
+  "releaseTag": "aistv-storage-piter",
+  "stateBranch": "aistv-state-piter",
+  "storageRepo": "ddvdat-glitch/rdp",
+  "runnerRepo": "ohohhoho82-alt/app",
+  "runId": "39201611616",
+  "user": "runneradmin",
+  "password": "abc12345",
+  "driveLetter": "X",
+  "sharedRoot": "X:\\AISTV-SYSTEM",
+  "stardeskId": "",
+  "windowsImage": "windows-2022",
+  "osBuild": "20348",
+  "webPort": "8080",
+  "startedAtUtc": "2026-10-19T04:54:34.7052934Z",
+  "startEpoch": 1792385525,
+  "durationMinutes": 300
+}
