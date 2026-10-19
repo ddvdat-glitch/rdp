@@ -1,16 +1,16 @@
 ===========================================================
            THONG TIN MAY AO: Máy OHBRO (ohbro)
 ===========================================================
-Trang thai     : Online
+Trang thai     : Stopped
 GameViewer ID  : 409668926
 Ma PIN (Code)  : abcde123
-Mat khau may   : Aistv@2026
+Mat khau may   : abcde123
 User Windows   : runneradmin
 Noi treo may   : ohohhoho82-alt/app (Run #39203050344)
 Kho luu o dia  : ddvdat-glitch/rdp (aistv-storage-ohbro)
 Nhanh State    : aistv-state-ohbro
 Thoi luong     : 5 giờ 00 phút
-Cap nhat luc   : 2026-10-19 12:11:13 (Gio Viet Nam)
+Cap nhat luc   : 2026-10-19 12:14:17 (Gio Viet Nam)
 ===========================================================
 HUONG DAN KET NOI:
 1. Mo NetEase GameViewer tren may tinh hoac dien thoai
