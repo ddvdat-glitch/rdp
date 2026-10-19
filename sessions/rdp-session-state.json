@@ -1,0 +1,20 @@
+{
+  "machineId": "may-chill",
+  "displayName": "Máy MAY-CHILL",
+  "releaseTag": "aistv-storage-may-chill",
+  "stateBranch": "aistv-state-may-chill",
+  "storageRepo": "ddvdat-glitch/rdp",
+  "runnerRepo": "ohohhoho82-alt/app",
+  "runId": "39247525180",
+  "user": "runneradmin",
+  "password": "Aistv2026",
+  "driveLetter": "X",
+  "sharedRoot": "X:\\AISTV-SYSTEM",
+  "stardeskId": "",
+  "windowsImage": "windows-2022",
+  "osBuild": "20348",
+  "webPort": "8080",
+  "startedAtUtc": "2026-10-19T11:52:53.0295273Z",
+  "startEpoch": 1792410621,
+  "durationMinutes": 300
+}
