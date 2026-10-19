@@ -1,0 +1,20 @@
+{
+  "machineId": "cloudv2",
+  "displayName": "Máy CLOUDV2",
+  "releaseTag": "aistv-storage-cloudv2",
+  "stateBranch": "aistv-state-cloudv2",
+  "storageRepo": "ddvdat-glitch/rdp",
+  "runnerRepo": "ohohhoho82-alt/app",
+  "runId": "39234281087",
+  "user": "runneradmin",
+  "password": "naynay12345",
+  "driveLetter": "X",
+  "sharedRoot": "X:\\AISTV-SYSTEM",
+  "stardeskId": "",
+  "windowsImage": "windows-2022",
+  "osBuild": "20348",
+  "webPort": "8080",
+  "startedAtUtc": "2026-10-19T10:03:11.5066561Z",
+  "startEpoch": 1792404035,
+  "durationMinutes": 300
+}
