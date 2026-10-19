@@ -1,16 +1,16 @@
 ===========================================================
            THONG TIN MAY AO: Máy MAY-1 (may-1)
 ===========================================================
-Trang thai     : Online
+Trang thai     : Stopped
 GameViewer ID  : 974543936
 Ma PIN (Code)  : Aistv2026
-Mat khau may   : Aistv@2026
+Mat khau may   : Aistv2026
 User Windows   : runneradmin
 Noi treo may   : ohohhoho82-alt/app (Run #39247787950)
 Kho luu o dia  : ddvdat-glitch/rdp (aistv-storage-may-1)
 Nhanh State    : aistv-state-may-1
 Thoi luong     : 5 giờ 00 phút
-Cap nhat luc   : 2026-10-19 18:56:53 (Gio Viet Nam)
+Cap nhat luc   : 2026-10-19 19:10:03 (Gio Viet Nam)
 ===========================================================
 HUONG DAN KET NOI:
 1. Mo NetEase GameViewer tren may tinh hoac dien thoai
