@@ -1,19 +1,19 @@
 {
   "machineId": "tuandz",
   "displayName": "Máy TUANDZ",
-  "status": "Stopped",
-  "isOnline": false,
-  "deviceId": "",
-  "gvId": "",
+  "status": "Online",
+  "isOnline": true,
+  "deviceId": "380233609",
+  "gvId": "380233609",
   "pin": "Aistv2026",
   "gvPin": "Aistv2026",
   "pass": "Aistv@2026",
   "user": "runneradmin",
   "runnerRepo": "ohohhoho82-alt/app",
   "storageRepo": "ddvdat-glitch/rdp",
-  "runId": "39202277834",
-  "updatedUtc": "2026-10-19T05:01:28.5309686Z",
-  "updatedVn": "2026-10-19 12:01:28 (UTC+7)",
+  "runId": "39202299721",
+  "updatedUtc": "2026-10-19T05:07:59.0572239Z",
+  "updatedVn": "2026-10-19 12:07:59 (UTC+7)",
   "durationMinutes": 300,
-  "note": "Máy đã tắt phiên làm việc"
+  "note": "Đã mở GameViewer và StarDesk"
 }

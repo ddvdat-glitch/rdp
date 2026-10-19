@@ -1,19 +1,19 @@
 ===========================================================
            THONG TIN MAY AO: Máy TUANDZ (tuandz)
 ===========================================================
-Trang thai     : Stopped
-GameViewer ID  : 
+Trang thai     : Online
+GameViewer ID  : 380233609
 Ma PIN (Code)  : Aistv2026
 Mat khau may   : Aistv@2026
 User Windows   : runneradmin
-Noi treo may   : ohohhoho82-alt/app (Run #39202277834)
+Noi treo may   : ohohhoho82-alt/app (Run #39202299721)
 Kho luu o dia  : ddvdat-glitch/rdp (aistv-storage-tuandz)
 Nhanh State    : aistv-state-tuandz
 Thoi luong     : 5 giờ 00 phút
-Cap nhat luc   : 2026-10-19 12:01:28 (Gio Viet Nam)
+Cap nhat luc   : 2026-10-19 12:07:59 (Gio Viet Nam)
 ===========================================================
 HUONG DAN KET NOI:
 1. Mo NetEase GameViewer tren may tinh hoac dien thoai
-2. Nhap GameViewer Device ID: 
+2. Nhap GameViewer Device ID: 380233609
 3. Nhap PIN Code: Aistv2026 de ket noi dieu khien
 ===========================================================
