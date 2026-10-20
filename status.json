@@ -1,19 +1,19 @@
 {
   "machineId": "dat",
   "displayName": "Máy DAT",
-  "status": "Stopped",
-  "isOnline": false,
+  "status": "Online",
+  "isOnline": true,
   "deviceId": "387100102",
   "gvId": "387100102",
   "pin": "dat7122008",
   "gvPin": "dat7122008",
-  "pass": "dat7122008",
+  "pass": "Aistv@2026",
   "user": "runneradmin",
   "runnerRepo": "ohohhoho82-alt/app",
   "storageRepo": "ddvdat-glitch/rdp",
-  "runId": "39407758148",
-  "updatedUtc": "2026-10-20T15:25:05.7111964Z",
-  "updatedVn": "2026-10-20 22:25:05 (UTC+7)",
+  "runId": "39449005540",
+  "updatedUtc": "2026-10-20T15:37:34.6036642Z",
+  "updatedVn": "2026-10-20 22:37:34 (UTC+7)",
   "durationMinutes": 300,
-  "note": "Máy đã tắt phiên làm việc"
+  "note": "Đã mở GameViewer và StarDesk"
 }
