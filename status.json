@@ -3,8 +3,8 @@
   "displayName": "Máy CLOUDV2",
   "ownerId": "1555829146159161465",
   "owner": "tu5m",
-  "status": "Online",
-  "isOnline": true,
+  "status": "Stopped",
+  "isOnline": false,
   "deviceId": "609410020",
   "gvId": "609410020",
   "pin": "naynay12345",
@@ -14,8 +14,8 @@
   "runnerRepo": "ohohhoho82-alt/app",
   "storageRepo": "ddvdat-glitch/rdp",
   "runId": "39414753381",
-  "updatedUtc": "2026-10-20T16:21:55.6671790Z",
-  "updatedVn": "2026-10-20 23:21:55 (UTC+7)",
+  "updatedUtc": "2026-10-20T16:24:48.8422435Z",
+  "updatedVn": "2026-10-20 23:24:48 (UTC+7)",
   "durationMinutes": 300,
-  "note": "Đang chạy ổn định"
+  "note": "Máy đã tắt phiên làm việc"
 }
