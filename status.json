@@ -3,8 +3,8 @@
   "displayName": "Máy MAY-CUA-VUA",
   "ownerId": "1295756189120069758",
   "owner": "Ayanokoji Kiyotaka",
-  "status": "Online",
-  "isOnline": true,
+  "status": "Stopped",
+  "isOnline": false,
   "deviceId": "350753423",
   "gvId": "350753423",
   "pin": "123456abc",
@@ -14,8 +14,8 @@
   "runnerRepo": "ohohhoho82-alt/app",
   "storageRepo": "ddvdat-glitch/rdp",
   "runId": "39375815864",
-  "updatedUtc": "2026-10-20T06:02:47.7949510Z",
-  "updatedVn": "2026-10-20 13:02:47 (UTC+7)",
+  "updatedUtc": "2026-10-20T06:15:45.2481687Z",
+  "updatedVn": "2026-10-20 13:15:45 (UTC+7)",
   "durationMinutes": 300,
-  "note": "Đang chạy ổn định"
+  "note": "Máy đã tắt phiên làm việc"
 }
