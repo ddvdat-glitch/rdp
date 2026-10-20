@@ -4,13 +4,13 @@
 Trang thai     : Online
 GameViewer ID  : 295574211
 Ma PIN (Code)  : Aistv2026
-Mat khau may   : Aistv@2026
+Mat khau may   : Aistv2026
 User Windows   : runneradmin
 Noi treo may   : ohohhoho82-alt/app (Run #39387512971)
 Kho luu o dia  : ddvdat-glitch/rdp (aistv-storage-may-cua-cha)
 Nhanh State    : aistv-state-may-cua-cha
 Thoi luong     : 5 giờ 00 phút
-Cap nhat luc   : 2026-10-20 14:40:27 (Gio Viet Nam)
+Cap nhat luc   : 2026-10-20 14:55:39 (Gio Viet Nam)
 ===========================================================
 HUONG DAN KET NOI:
 1. Mo NetEase GameViewer tren may tinh hoac dien thoai
