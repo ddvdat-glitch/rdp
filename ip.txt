@@ -1,16 +1,16 @@
 ===========================================================
            THONG TIN MAY AO: Máy CUA-VUA (cua-vua)
 ===========================================================
-Trang thai     : Stopped
+Trang thai     : Online
 GameViewer ID  : 338340805
 Ma PIN (Code)  : 123456abc
-Mat khau may   : 123456abc
+Mat khau may   : Aistv@2026
 User Windows   : runneradmin
-Noi treo may   : ohohhoho82-alt/app (Run #39542594350)
+Noi treo may   : ohohhoho82-alt/app (Run #39575370179)
 Kho luu o dia  : ddvdat-glitch/rdp (aistv-storage-cua-vua)
 Nhanh State    : aistv-state-cua-vua
 Thoi luong     : 5 giờ 00 phút
-Cap nhat luc   : 2026-10-21 16:10:48 (Gio Viet Nam)
+Cap nhat luc   : 2026-10-21 16:19:03 (Gio Viet Nam)
 ===========================================================
 HUONG DAN KET NOI:
 1. Mo NetEase GameViewer tren may tinh hoac dien thoai
