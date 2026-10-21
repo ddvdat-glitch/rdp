@@ -3,8 +3,8 @@
   "displayName": "Máy MAY-CHILL",
   "ownerId": "1536563759202439221",
   "owner": "NTD | CHILL",
-  "status": "Online",
-  "isOnline": true,
+  "status": "Stopped",
+  "isOnline": false,
   "deviceId": "752316234",
   "gvId": "752316234",
   "pin": "Aistv2026",
@@ -14,8 +14,8 @@
   "runnerRepo": "ohohhoho82-alt/app",
   "storageRepo": "ddvdat-glitch/rdp",
   "runId": "39542570615",
-  "updatedUtc": "2026-10-21T08:51:21.4798445Z",
-  "updatedVn": "2026-10-21 15:51:21 (UTC+7)",
+  "updatedUtc": "2026-10-21T09:10:37.0891012Z",
+  "updatedVn": "2026-10-21 16:10:37 (UTC+7)",
   "durationMinutes": 300,
-  "note": "Đang chạy ổn định"
+  "note": "Máy đã tắt phiên làm việc"
 }
