@@ -3,8 +3,8 @@
   "displayName": "Máy TEST123",
   "ownerId": "946662197168341053",
   "owner": "chi ki ka wa",
-  "status": "Online",
-  "isOnline": true,
+  "status": "Stopped",
+  "isOnline": false,
   "deviceId": "950890345",
   "gvId": "950890345",
   "pin": "dat7122008",
@@ -14,8 +14,8 @@
   "runnerRepo": "ohohhoho82-alt/app",
   "storageRepo": "ddvdat-glitch/rdp",
   "runId": "39691613567",
-  "updatedUtc": "2026-10-22T04:00:56.1018273Z",
-  "updatedVn": "2026-10-22 11:00:56 (UTC+7)",
+  "updatedUtc": "2026-10-22T04:10:14.8931573Z",
+  "updatedVn": "2026-10-22 11:10:14 (UTC+7)",
   "durationMinutes": 300,
-  "note": "Đang chạy ổn định"
+  "note": "Máy đã tắt phiên làm việc"
 }
