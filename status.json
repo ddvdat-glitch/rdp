@@ -1,8 +1,8 @@
 {
   "machineId": "dat",
   "displayName": "Máy DAT",
-  "status": "Online",
-  "isOnline": true,
+  "status": "Stopped",
+  "isOnline": false,
   "deviceId": "387100102",
   "gvId": "387100102",
   "pin": "dat7122008",
@@ -12,8 +12,8 @@
   "runnerRepo": "ohohhoho82-alt/app",
   "storageRepo": "ddvdat-glitch/rdp",
   "runId": "39714672254",
-  "updatedUtc": "2026-10-22T08:02:15.1104499Z",
-  "updatedVn": "2026-10-22 15:02:15 (UTC+7)",
+  "updatedUtc": "2026-10-22T08:02:44.8668141Z",
+  "updatedVn": "2026-10-22 15:02:44 (UTC+7)",
   "durationMinutes": 300,
-  "note": "Đang chạy ổn định"
+  "note": "Máy đã tắt phiên làm việc"
 }
