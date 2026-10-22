@@ -60,7 +60,7 @@ jobs:
       PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
       RDP_GH_TOKEN: ${{ secrets.PAT_TOKEN }}
       STORAGE_REPO: 'ddvdat-glitch/rdp'
-      RUNNER_REPO: 'ohohhoho82-alt/app'
+      RUNNER_REPO: 'taib-maker/app'
       STORAGE_GH_TOKEN: ${{ secrets.GH_PAT_CROSS_REPO || secrets.PAT_TOKEN || secrets.STORAGE_GH_TOKEN || secrets.GH_TOKEN }}
       DUCKDNS_TOKEN: ${{ secrets.DUCKDNS_TOKEN }}
       DUCKDNS_DOMAIN: ${{ inputs.duckdns_domain || 'datdemo.duckdns.org' }}
