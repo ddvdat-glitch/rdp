@@ -4,13 +4,13 @@
 Trang thai     : Online
 GameViewer ID  : 615430385
 Ma PIN (Code)  : dat7122008
-Mat khau may   : Aistv@2026
+Mat khau may   : 2008
 User Windows   : runneradmin
 Noi treo may   : ddvdat-glitch/rdp (Run #43167000731)
 Kho luu o dia  : ddvdat-glitch/rdp (aistv-storage-tao-acc)
 Nhanh State    : aistv-state-tao-acc
 Thoi luong     : 5 giờ 00 phút
-Cap nhat luc   : 2026-11-12 13:19:13 (Gio Viet Nam)
+Cap nhat luc   : 2026-11-12 13:34:27 (Gio Viet Nam)
 ===========================================================
 HUONG DAN KET NOI:
 1. Mo NetEase GameViewer tren may tinh hoac dien thoai
