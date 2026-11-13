@@ -1,0 +1,20 @@
+{
+  "machineId": "abc123456",
+  "displayName": "abc123456",
+  "releaseTag": "aistv-storage-abc123456",
+  "stateBranch": "aistv-state-abc123456",
+  "storageRepo": "ddvdat-glitch/rdp",
+  "runnerRepo": "ddvdat-glitch/rdp",
+  "runId": "43391287194",
+  "user": "runneradmin",
+  "password": null,
+  "driveLetter": "X",
+  "sharedRoot": "X:\\AISTV-SYSTEM",
+  "stardeskId": "",
+  "windowsImage": "windows-2022",
+  "osBuild": "20348",
+  "webPort": "8080",
+  "startedAtUtc": "2026-11-13T08:15:40.9633309Z",
+  "startEpoch": 1794557495,
+  "durationMinutes": 300
+}
