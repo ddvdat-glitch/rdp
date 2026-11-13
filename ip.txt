@@ -1,16 +1,16 @@
 ===========================================================
            THONG TIN MAY AO: abc123456 (abc123456)
 ===========================================================
-Trang thai     : Online
+Trang thai     : Stopped
 GameViewer ID  : 830997617
 Ma PIN (Code)  : dat7122008
-Mat khau may   : Aistv@2026
+Mat khau may   : 2008
 User Windows   : runneradmin
 Noi treo may   : ddvdat-glitch/rdp (Run #43391287194)
 Kho luu o dia  : ddvdat-glitch/rdp (aistv-storage-abc123456)
 Nhanh State    : aistv-state-abc123456
 Thoi luong     : 5 giờ 00 phút
-Cap nhat luc   : 2026-11-13 15:15:30 (Gio Viet Nam)
+Cap nhat luc   : 2026-11-13 15:22:59 (Gio Viet Nam)
 ===========================================================
 HUONG DAN KET NOI:
 1. Mo NetEase GameViewer tren may tinh hoac dien thoai

@@ -1,19 +1,19 @@
 {
   "machineId": "abc123456",
   "displayName": "abc123456",
-  "status": "Online",
-  "isOnline": true,
+  "status": "Stopped",
+  "isOnline": false,
   "deviceId": "830997617",
   "gvId": "830997617",
   "pin": "dat7122008",
   "gvPin": "dat7122008",
-  "pass": "Aistv@2026",
+  "pass": "2008",
   "user": "runneradmin",
   "runnerRepo": "ddvdat-glitch/rdp",
   "storageRepo": "ddvdat-glitch/rdp",
   "runId": "43391287194",
-  "updatedUtc": "2026-11-13T08:15:30.8653989Z",
-  "updatedVn": "2026-11-13 15:15:30 (UTC+7)",
+  "updatedUtc": "2026-11-13T08:22:59.5703882Z",
+  "updatedVn": "2026-11-13 15:22:59 (UTC+7)",
   "durationMinutes": 300,
-  "note": "Đã mở GameViewer và StarDesk"
+  "note": "Máy đã tắt phiên làm việc"
 }
